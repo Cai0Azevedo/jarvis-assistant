@@ -33,10 +33,10 @@ Você é o arquiteto de software e desenvolvedor sênior responsável por implem
 
 ---
 
-## 3. Árvore Oficial do Projeto (`C:\Jarvis`)
+## 3. Árvore Oficial do Projeto (`C:\Jarvis\jarvis-assistant`)
 
 ```text
-C:\Jarvis\
+C:\Jarvis\jarvis-assistant
 ├── appConfig\
 │   ├── __init__.py
 │   └── settings.py              # Singleton: carrega .env, porta COM, configs do Ollama e intervalos

@@ -60,7 +60,7 @@ O JARVIS combina princípios de **Clean Architecture** com uma arquitetura **Ori
 Todo o código-fonte segue rigorosamente a convenção **camelCase** para pastas, arquivos, variáveis, funções e métodos, e **PascalCase** para classes:
 
 ```text
-C:\Jarvis\
+C:\Jarvis\jarvis-assistant
 ├── appConfig\
 │   ├── __init__.py
 │   └── settings.py              # Singleton: carrega .env, porta COM, configs do Ollama e intervalos

@@ -17,9 +17,11 @@ class CpuRamMonitor:
         sharedMem: Optional[mmap.mmap] = None
 
         try:
+            # Mapeia primeiro apenas o cabeçalho (20 bytes) para descobrir o tamanho exato da seção;
+            # pedir um tamanho fixo maior que o criado pelo Afterburner causa WinError 5 (Acesso negado).
             sharedMem = mmap.mmap(
                 -1,
-                1024 * 1024,
+                20,
                 tagname="MAHMSharedMemory",
                 access=mmap.ACCESS_READ,
             )
@@ -27,8 +29,11 @@ class CpuRamMonitor:
             signature, _version, headerSize, numEntries, entrySize = struct.unpack(
                 "4sIIII", sharedMem[:20]
             )
+            sharedMem.close()
+            sharedMem = None
 
-            if signature != b"MAHM":
+            # Em x86 (little-endian), o DWORD 'MAHM' do C++ fica armazenado como b'MHAM'
+            if signature not in (b"MHAM", b"MAHM"):
                 if not self._warnedAfterburnerClosed:
                     print(
                         "[AVISO][CpuRamMonitor] MSI Afterburner fechado ou memória compartilhada "
@@ -38,6 +43,17 @@ class CpuRamMonitor:
                 return sensorsData
 
             self._warnedAfterburnerClosed = False
+
+            if numEntries == 0 or entrySize < 1304:
+                return sensorsData
+
+            totalSize: int = headerSize + (numEntries * entrySize)
+            sharedMem = mmap.mmap(
+                -1,
+                totalSize,
+                tagname="MAHMSharedMemory",
+                access=mmap.ACCESS_READ,
+            )
 
             for index in range(numEntries):
                 offset: int = headerSize + (index * entrySize)

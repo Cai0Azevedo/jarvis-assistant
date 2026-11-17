@@ -1,0 +1,11 @@
+# ============================================================================
+# JARVIS ASSISTANT - Dependências Python (Fase 1 a Fase 3)
+# Instalação no ambiente virtual (PowerShell):
+#   .\venv\Scripts\Activate.ps1
+#   pip install -r requirements.txt
+# ============================================================================
+
+ollama>=0.6.0
+psutil>=7.0.0
+nvidia-ml-py>=12.0.0
+pyserial>=3.5
