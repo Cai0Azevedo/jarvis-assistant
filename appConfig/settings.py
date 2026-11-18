@@ -54,8 +54,11 @@ class Settings:
 
             # Configurações do Arduino UNO (Porta Serial)
             self.comPort: str = os.getenv("COM_PORT", "COM3")
-            self.baudRate: int = int(os.getenv("BAUD_RATE", "115200"))
+            self.baudRate: int = int(os.getenv("BAUD_RATE", "9600"))
             self.serialTimeout: float = float(os.getenv("SERIAL_TIMEOUT", "1.0"))
+            self.lcdRefreshIntervalSeconds: float = float(
+                os.getenv("LCD_REFRESH_INTERVAL_SECONDS", "3.5")
+            )
 
             # Configurações do Serviço de E-mail (IMAP)
             self.imapServer: str = os.getenv("IMAP_SERVER", "imap.gmail.com")

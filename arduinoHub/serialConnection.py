@@ -23,7 +23,7 @@ class SerialConnection:
     _instanceLock: threading.Lock = threading.Lock()
     _initialized: bool = False
 
-    DEFAULT_BAUD_RATE: int = 115200
+    DEFAULT_BAUD_RATE: int = 9600
     ARDUINO_RESET_DELAY_SECONDS: float = 2.0
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "SerialConnection":

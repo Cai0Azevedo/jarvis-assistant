@@ -5,12 +5,14 @@ import time
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 # Garante importação a partir da raiz do projeto mesmo executando diretamente via caminho do arquivo
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import main as jarvisMain
 from aiCore.eventBus import EventBus
 from arduinoHub import (
     LcdDisplay,
@@ -23,15 +25,17 @@ from arduinoHub import (
     sensorReader,
     serialConnection,
 )
+from arduinoHub.serialConnection import SerialException
 from pcHardware.pcStatusFacade import pcStatusFacade
 
 
 class TestArduinoHub(unittest.TestCase):
-    """Testes unitários e de integração do subsistema arduinoHub em modo simulado/mock."""
+    """Testes unitários e de integração do subsistema arduinoHub e ciclo de vida no main.py."""
 
     def setUp(self) -> None:
         self.bus: EventBus = EventBus()
         self.conn: SerialConnection = serialConnection
+        self.conn.disconnect()
         self.conn.clearMockTxHistory()
         self.conn.isMockMode = True
 
@@ -100,9 +104,16 @@ class TestArduinoHub(unittest.TestCase):
         invalid: dict[str, Any] = parseIncoming("ruido_sem_delimitadores")
         self.assertEqual(invalid["type"], "INVALID")
 
-    def testSerialConnectionSingletonAndThreadSafety(self) -> None:
+    def testSerialConnectionSingletonFallbackAndThreadSafety(self) -> None:
         secondRef: SerialConnection = SerialConnection()
         self.assertIs(secondRef, self.conn)
+
+        # Simula falha na porta COM para validar fallback gracioso mesmo com Arduino conectado
+        with patch("arduinoHub.serialConnection.serial") as mockSerialModule:
+            mockSerialModule.Serial.side_effect = SerialException("COM3 ocupada ou ausente")
+            connected: bool = self.conn.connect(forceReconnect=True)
+
+        self.assertFalse(connected)
         self.assertTrue(self.conn.is_mock)
         self.assertFalse(self.conn.isOpen())
 
@@ -128,17 +139,17 @@ class TestArduinoHub(unittest.TestCase):
         self.assertEqual(len(self.conn.getMockTxHistory()), 20)
 
     def testLcdDisplayStatusErrorAndAlternatingTelemetry(self) -> None:
-        self.assertTrue(self.display.showOnline())
+        self.assertTrue(self.display.showOnline(holdSeconds=0.0))
         l1, l2 = self.display.getLastDisplayedLines()
         self.assertEqual(l1, "JARVIS ONLINE   ")
         self.assertEqual(l2, "SISTEMA PRONTO  ")
 
-        self.assertTrue(self.display.showProcessing("LENDO EMAILS"))
+        self.assertTrue(self.display.showProcessing("LENDO EMAILS", holdSeconds=0.0))
         l1, l2 = self.display.getLastDisplayedLines()
         self.assertEqual(l1, "PROCESSANDO...  ")
         self.assertEqual(l2, "LENDO EMAILS    ")
 
-        # Testa alternância manual de telas (Tela 0 = CPU/GPU, Tela 1 = RAM/VRAM)
+        # Testa alternância manual das 3 telas (0=CPU/GPU, 1=RAM/VRAM, 2=Status/Hora)
         self.assertTrue(self.display.showTelemetry(screenIndex=0))
         l1, l2 = self.display.getLastDisplayedLines()
         self.assertEqual(l1, "CPU: 45% 58C    ")
@@ -149,29 +160,46 @@ class TestArduinoHub(unittest.TestCase):
         self.assertEqual(l1, "RAM: 39% 12.4GB ")
         self.assertEqual(l2, "VRAM:2.4/8GB    ")
 
-        # Testa worker de alternância automática em intervalo curto para teste rápido
+        self.assertTrue(self.display.showTelemetry(screenIndex=2))
+        l1, l2 = self.display.getLastDisplayedLines()
+        self.assertEqual(l1, "JARVIS ONLINE   ")
+        self.assertTrue(l2.startswith("HORA: "))
+
+        # Testa worker de alternância automática em intervalo curto
         self.conn.clearMockTxHistory()
-        self.display.startTelemetryLoop(intervalSeconds=0.06)
-        time.sleep(0.22)
+        self.display.startTelemetryLoop(intervalSeconds=0.05)
+        time.sleep(0.24)
         self.display.stopTelemetryLoop()
         txHistory: list[str] = self.conn.getMockTxHistory()
-        self.assertGreaterEqual(len(txHistory), 2)
+        self.assertGreaterEqual(len(txHistory), 3)
         self.assertTrue(any("CPU: 45% 58C" in pkt for pkt in txHistory))
         self.assertTrue(any("RAM: 39% 12.4GB" in pkt for pkt in txHistory))
+        self.assertTrue(any("HORA:" in pkt for pkt in txHistory))
 
-    def testLcdDisplayObserverAndAlertHold(self) -> None:
+    def testLcdDisplayObserverHoldAndResumeTelemetry(self) -> None:
+        # Evento de comando de voz/texto retém exibição temporariamente e depois retoma telemetria
+        self.bus.publish(
+            "voiceCommandReceived",
+            {"text": "Qual temp CPU?", "holdSeconds": 0.12},
+            asyncDispatch=False,
+        )
+        l1, l2 = self.display.getLastDisplayedLines()
+        self.assertEqual(l1, "COMANDO:        ")
+        self.assertEqual(l2, "Qual temp CPU?  ")
+
+        # Durante o hold, telemetria não sobrescreve a notificação
+        self.assertFalse(self.display.showTelemetry(screenIndex=0))
+
+        # Após expirar o hold, telemetria normal é retomada
+        time.sleep(0.15)
+        self.assertTrue(self.display.showTelemetry(screenIndex=0))
+        l1, l2 = self.display.getLastDisplayedLines()
+        self.assertEqual(l1, "CPU: 45% 58C    ")
+
         self.bus.publish("gpuHighTempAlert", {"gpuTemp": 84.0}, asyncDispatch=False)
         l1, l2 = self.display.getLastDisplayedLines()
         self.assertEqual(l1, "ALERTA TEMP GPU!")
         self.assertEqual(l2, "RTX: 84C        ")
-
-        # Telemetria não deve sobrescrever o alerta enquanto o hold está ativo
-        updated: bool = self.display.showTelemetry()
-        self.assertFalse(updated)
-
-        self.display.showError("FALHA IMAP", holdSeconds=0.1)
-        l1, l2 = self.display.getLastDisplayedLines()
-        self.assertEqual(l1, "ERRO: FALHA IMAP")
 
     def testSensorReaderParsesAndPublishesEvents(self) -> None:
         capturedSensors: list[dict[str, Any]] = []
@@ -195,6 +223,36 @@ class TestArduinoHub(unittest.TestCase):
 
         self.assertTrue(self.reader.sendCommand("RELAY1", "ON"))
         self.assertIn("<CMD:RELAY1:ON>", self.conn.getMockTxHistory())
+
+    def testMainLifecycleInitializeAndGracefulShutdown(self) -> None:
+        # Valida boot com fallback gracioso em caso de SerialException e envio de despedida no teardown
+        with (
+            patch("arduinoHub.serialConnection.serial") as mockSerialModule,
+            patch.object(pcStatusFacade, "getSnapshot", return_value=self.mockSnapshot),
+            patch.object(pcStatusFacade, "shutdown"),
+            patch.object(self.bus, "shutdown"),
+        ):
+            mockSerialModule.Serial.side_effect = SerialException("Porta COM3 desconectada")
+            container: jarvisMain.JarvisContainer = jarvisMain.initializeRuntime(
+                startBackgroundWorkers=True
+            )
+            try:
+                self.assertIs(container.serialConn, serialConnection)
+                self.assertIs(container.hardwareFacade, pcStatusFacade)
+                self.assertIs(container.display, lcdDisplay)
+                self.assertTrue(container.serialConn.is_mock)
+
+                time.sleep(0.08)
+                txBeforeShutdown: list[str] = container.serialConn.getMockTxHistory()
+                self.assertTrue(
+                    any("JARVIS ONLINE" in pkt for pkt in txBeforeShutdown)
+                )
+            finally:
+                jarvisMain.shutdownRuntime(container, goodbyeDelaySeconds=0.0)
+
+            txAfterShutdown: list[str] = container.serialConn.getMockTxHistory()
+            self.assertIn("<LCD:JARVIS OFFLINE  |ATE LOGO!       >", txAfterShutdown)
+            self.assertFalse(container.serialConn.isOpen())
 
 
 def runMockDemo(cycles: int = 4, intervalSeconds: float = 3.5) -> None:
@@ -220,9 +278,9 @@ def runMockDemo(cycles: int = 4, intervalSeconds: float = 3.5) -> None:
 
     try:
         print("\n1) Exibindo status iniciais...")
-        display.showOnline()
+        display.showOnline(holdSeconds=0.0)
         time.sleep(1.0)
-        display.showProcessing("CARREGANDO IA")
+        display.showProcessing("CARREGANDO IA", holdSeconds=0.0)
         time.sleep(1.0)
 
         print(
@@ -244,7 +302,7 @@ def runMockDemo(cycles: int = 4, intervalSeconds: float = 3.5) -> None:
         reader.sendCommand("RELAY1", "ON")
         time.sleep(0.2)
     finally:
-        display.shutdown()
+        display.shutdown(sendGoodbye=True)
         reader.stop()
         serialConnection.disconnect()
         pcStatusFacade.shutdown()

@@ -1,0 +1,210 @@
+================================================================================
+JARVIS ASSISTANT (C:\Jarvis\jarvis-assistant)
+DOCUMENTAÇÃO DA ÁRVORE DE DIRETÓRIOS E LOCALIZAÇÃO DAS QUERIES / CONSULTAS
+Atualizado em: 18/11/2026
+================================================================================
+
+--------------------------------------------------------------------------------
+1. ÁRVORE COMPLETA DE DIRETÓRIOS E ARQUIVOS ATUAIS
+--------------------------------------------------------------------------------
+Legenda:
+  [OK]     = Módulo implementado e funcional
+  [STUB]   = Arquivo criado (0 bytes), aguardando implementação em fase futura
+  [TEST]   = Suíte de testes automatizados / simulação mock
+  [CONFIG] = Arquivo de configuração / ambiente / documentação
+  [IGN]    = Diretório de ambiente ou cache (não versionado)
+
+C:\Jarvis\jarvis-assistant\
+├── .env                              [CONFIG] Variáveis locais (COM_PORT, BAUD_RATE, OLLAMA, IMAP)
+├── .env.example                      [CONFIG] Template público de variáveis de ambiente
+├── .gitattributes                    [CONFIG] Regras de atributos do Git
+├── .gitignore                        [CONFIG] Regras de arquivos ignorados pelo Git
+├── Architecture.md                   [CONFIG] Regras arquiteturais, convenções e contratos
+├── README.md                         [CONFIG] Documentação principal e roadmap do projeto
+├── estruturaProjeto.txt              [CONFIG] Este arquivo de documentação estrutural
+├── main.py                           [OK]     Ponto de entrada, container DI, lifecycle e loop console
+│
+├── aiCore\                           [OK]     Núcleo de IA, memória, skills e barramento de eventos
+│   ├── __init__.py                   [OK]     Exportações do pacote aiCore
+│   ├── eventBus.py                   [OK]     Barramento Pub-Sub assíncrono (Observer Pattern)
+│   ├── jarvisBrain.py                [OK]     Orquestrador do Ollama (qwen3.5:9b) e Tool Calling
+│   ├── memoryStore.py                [OK]     Janela deslizante de mensagens e cache de IDs de e-mail
+│   ├── skillRegistry.py              [OK]     Decorador @registerSkill e registro de ferramentas
+│   └── __pycache__\                  [IGN]    Bytecode compilado Python
+│
+├── appConfig\                        [OK]     Configurações globais e carregamento de .env
+│   ├── __init__.py                   [OK]     Exportação do singleton settings
+│   ├── settings.py                   [OK]     Singleton Settings (Ollama, Hardware, Arduino, IMAP)
+│   └── __pycache__\                  [IGN]    Bytecode compilado Python
+│
+├── arduinoHub\                       [OK]     Subsistema físico Arduino UNO + LCD 1602A (USB Serial)
+│   ├── __init__.py                   [OK]     Exportações públicas do arduinoHub
+│   ├── lcdDisplay.py                 [OK]     Observer do EventBus e worker de telas alternadas (16x2)
+│   ├── sensorReader.py               [OK]     Leitor daemon de pacotes <SEN:...> / <BTN:...> e <CMD:...>
+│   ├── serialConnection.py           [OK]     Singleton thread-safe pyserial com fallback para Mock
+│   ├── serialProtocol.py             [OK]     Formatador <LCD:L1|L2> (16 chars) e parser de pacotes
+│   └── __pycache__\                  [IGN]    Bytecode compilado Python
+│
+├── emailService\                     [STUB]   Fase 4 — Triagem inteligente de e-mails (não implementada)
+│   ├── __init__.py                   [STUB]   (0 bytes)
+│   ├── emailAnalyzer.py              [STUB]   (0 bytes)
+│   ├── emailWatcher.py               [STUB]   (0 bytes)
+│   └── imapClient.py                 [STUB]   (0 bytes)
+│
+├── pcHardware\                       [OK]     Telemetria local de CPU, RAM e GPU sem privilégio Admin
+│   ├── __init__.py                   [OK]     Exportações do pacote pcHardware
+│   ├── cpuRamMonitor.py              [OK]     Leitura de CPU/RAM (psutil) + MAHMSharedMemory (Afterburner)
+│   ├── gpuMonitor.py                 [OK]     Leitura da RTX 4060 Ti via pynvml (NVML)
+│   ├── pcStatusFacade.py             [OK]     Facade getSnapshot(), Modo Jogo (>85%) e alertas térmicos
+│   └── __pycache__\                  [IGN]    Bytecode compilado Python
+│
+├── skills\                           [STUB]   Fase 2 — Skills dedicadas por domínio (não implementada)
+│   ├── __init__.py                   [STUB]   (0 bytes)
+│   ├── arduinoSkills.py              [STUB]   (0 bytes)
+│   ├── emailSkills.py                [STUB]   (0 bytes)
+│   └── pcSkills.py                   [STUB]   (0 bytes)
+│
+├── tests\                            [TEST]   Testes automatizados
+│   ├── testArduinoHub.py             [TEST]   Testes unitários + demo mock do arduinoHub e main.py
+│   └── __pycache__\                  [IGN]    Bytecode compilado Python
+│
+├── voiceEngine\                      [STUB]   Fase 5 — Motor de voz neural (não implementada)
+│   ├── __init__.py                   [STUB]   (0 bytes)
+│   ├── audioQueue.py                 [STUB]   (0 bytes)
+│   ├── voiceInput.py                 [STUB]   (0 bytes)
+│   ├── voiceOutput.py                [STUB]   (0 bytes)
+│   └── wakeWord.py                   [STUB]   (0 bytes)
+│
+├── .git\                             [IGN]    Metadados de controle de versão Git
+└── venv\                             [IGN]    Ambiente virtual Python 3.12 (Include, Lib, Scripts)
+
+
+--------------------------------------------------------------------------------
+2. RELAÇÃO HIERÁRQUICA DE PASTAS (QUAIS PASTAS ESTÃO DENTRO DE OUTRAS)
+--------------------------------------------------------------------------------
+Raiz: C:\Jarvis\jarvis-assistant\
+  ├── aiCore\                    (nível 1 - contém __pycache__\)
+  ├── appConfig\                 (nível 1 - contém __pycache__\)
+  ├── arduinoHub\                (nível 1 - contém __pycache__\)
+  ├── emailService\              (nível 1 - sem subpastas de código)
+  ├── pcHardware\                (nível 1 - contém __pycache__\)
+  ├── skills\                    (nível 1 - sem subpastas de código)
+  ├── tests\                     (nível 1 - contém __pycache__\)
+  ├── voiceEngine\               (nível 1 - sem subpastas de código)
+  ├── .git\                      (nível 1 - subpastas internas do Git)
+  └── venv\                      (nível 1 - subpastas Include\, Lib\, Scripts\, etc.)
+
+Observação: Todos os módulos de negócio e testes estão diretamente no nível 1
+abaixo da raiz do projeto (não há pasta src\ neste repositório).
+
+
+--------------------------------------------------------------------------------
+3. LOCALIZAÇÃO NA ÁRVORE DE TODAS AS QUERIES / CONSULTAS / COMANDOS / EVENTOS
+--------------------------------------------------------------------------------
+Nota: O projeto não utiliza banco de dados SQL. Todas as consultas ("queries")
+ocorrem via LLM local (Ollama), memória compartilhada/APIs de hardware, porta
+serial USB (Arduino), barramento EventBus e consultas planejadas de IMAP.
+
+3.1. QUERIES AO LLM LOCAL (OLLAMA / QWEN 3.5)
+  - aiCore\jarvisBrain.py
+      * JarvisBrain.processInput()         -> Consulta principal ao modelo via ollama.chat()
+                                              com num_ctx=8192 e loop de Tool Calling.
+      * JarvisBrain.runBackgroundPrompt()  -> Consulta isolada em segundo plano (pausada se
+                                              GPU > 85% / Modo Jogo ativo).
+  - aiCore\memoryStore.py
+      * MemoryStore.getMessages()          -> Monta a payload de contexto (systemPrompt +
+                                              janela deslizante) enviada na query ao Ollama.
+  - appConfig\settings.py
+      * Settings.ollamaHost                -> Endpoint local (http://127.0.0.1:11434)
+      * Settings.ollamaModel               -> Modelo consultado (qwen3.5:9b)
+      * Settings.getOllamaOptions()        -> Opções obrigatórias ({'num_ctx': 8192})
+
+3.2. QUERIES DE TOOL CALLING (SKILLS EXPOSTAS À IA)
+  - main.py
+      * getPcTelemetrySnapshot()           -> Skill registrada com @registerSkill; única
+                                              ferramenta de consulta ativa para o LLM.
+  - aiCore\skillRegistry.py
+      * SkillRegistry.getToolsList()       -> Lista de funções enviadas ao Ollama
+      * SkillRegistry.getSkill()           -> Busca skill por nome
+      * SkillRegistry.executeSkill()       -> Executa a skill solicitada pelo LLM
+  - skills\pcSkills.py                     -> [STUB] Futuras queries de PC para o LLM
+  - skills\arduinoSkills.py                -> [STUB] Futuras queries/comandos Arduino para o LLM
+  - skills\emailSkills.py                  -> [STUB] Futuras queries de e-mail para o LLM
+
+3.3. QUERIES DE TELEMETRIA DE HARDWARE (CPU, RAM, GPU)
+  - pcHardware\pcStatusFacade.py
+      * PcStatusFacade.getSnapshot()       -> Consolida CPU, RAM, GPU, VRAM e Modo Jogo
+      * PcStatusFacade.isGamingModeActive()-> Consulta uso da GPU vs limiar (>85%)
+      * PcStatusFacade.formatSummary()     -> Formata resumo textual dos sensores
+  - pcHardware\cpuRamMonitor.py
+      * CpuRamMonitor.readAfterburnerSensors() -> Query na memória compartilhada do Windows
+                                                  ("MAHMSharedMemory") via mmap + struct
+      * CpuRamMonitor.getCpuTemperature()      -> Busca chaves "CPU temperature" ou
+                                                  "Temperatura da CPU" nos sensores
+      * CpuRamMonitor.getCpuRamMetrics()       -> Query via psutil (cpu_percent, virtual_memory)
+  - pcHardware\gpuMonitor.py
+      * GpuMonitor.getGpuMetrics()         -> Queries na GPU NVIDIA via pynvml (NVML):
+                                              nome, uso %, temperatura °C, VRAM usada/total
+
+3.4. QUERIES E PACOTES SERIAIS (ARDUINO UNO + LCD 1602A)
+  - arduinoHub\serialConnection.py
+      * SerialConnection.connect()         -> Abre porta COM (COM3 @ 9600 baud) ou entra em Mock
+      * SerialConnection.send()            -> Envia pacote serial com threading.Lock()
+      * SerialConnection.readLine()        -> Leitura não-bloqueante via in_waiting + buffer
+      * SerialConnection.getStatus()       -> Consulta estado atual da conexão / modo mock
+  - arduinoHub\serialProtocol.py
+      * SerialProtocol.formatLcdMessage()  -> Empacota <LCD:Linha1|Linha2>\n (16 chars/linha)
+      * SerialProtocol.encodeCommand()     -> Empacota <CMD:ACAO:VALOR>\n
+      * SerialProtocol.encodeSensor()      -> Empacota <SEN:NOME:VALOR>\n
+      * SerialProtocol.parseIncoming()     -> Interpreta pacotes recebidos do Arduino:
+                                              <BTN:ID>, <SEN:NOME:VALOR>, <CMD:...>, <LCD:...>
+  - arduinoHub\lcdDisplay.py
+      * LcdDisplay.showTelemetry()         -> Consulta pcStatusFacade.getSnapshot() e alterna
+                                              3 telas (CPU/GPU, RAM/VRAM, Status/Hora) a cada 3.5s
+      * LcdDisplay.showOnline() / showProcessing() / showError() / showShutdown()
+  - arduinoHub\sensorReader.py
+      * SensorReader.pollOnce()            -> Lê e decodifica pacotes <SEN:...> e <BTN:...>
+      * SensorReader.sendCommand()         -> Envia comando <CMD:ACAO:VALOR>\n ao Arduino
+      * SensorReader.getSensorValue()      -> Consulta última leitura em cache de um sensor
+      * SensorReader.getLatestSensors()    -> Consulta dicionário completo de sensores em cache
+
+3.5. QUERIES / TÓPICOS DO EVENTBUS (PUB-SUB ASSÍNCRONO)
+  - aiCore\eventBus.py                     -> Motor Pub-Sub (subscribe, publish, getSubscribersCount)
+  - Mapeamento dos eventos na árvore:
+      * "gpuHighTempAlert"        -> Publicado: pcHardware\pcStatusFacade.py
+                                     Assinado:  main.py, arduinoHub\lcdDisplay.py
+      * "cpuHighTempAlert"        -> Publicado: pcHardware\pcStatusFacade.py
+                                     Assinado:  main.py, arduinoHub\lcdDisplay.py
+      * "gamingModeChanged"       -> Publicado: pcHardware\pcStatusFacade.py
+                                     Assinado:  main.py, aiCore\jarvisBrain.py, arduinoHub\lcdDisplay.py
+      * "userCommandReceived"     -> Publicado: main.py
+                                     Assinado:  arduinoHub\lcdDisplay.py
+      * "skillExecuted"           -> Publicado: aiCore\jarvisBrain.py
+      * "assistantResponseReady"  -> Publicado: aiCore\jarvisBrain.py
+      * "brainError"              -> Publicado: aiCore\jarvisBrain.py
+                                     Assinado:  arduinoHub\lcdDisplay.py
+      * "arduinoConnectionChanged"-> Publicado: arduinoHub\serialConnection.py
+                                     Assinado:  main.py
+      * "arduinoSensorUpdated"    -> Publicado: arduinoHub\sensorReader.py
+      * "arduinoButtonPressed"    -> Publicado: arduinoHub\sensorReader.py
+                                     Assinado:  main.py
+      * "telemetryUpdated", "urgentEmailReceived", "voiceCommandReceived",
+        "jarvisStatusChanged", "arduinoErrorAlert", "arduinoDisplayMessage"
+                                  -> Assinados em: arduinoHub\lcdDisplay.py
+
+3.6. CONSULTAS DE E-MAIL (IMAP) E CACHE
+  - aiCore\memoryStore.py
+      * MemoryStore.markEmailAsRead() / isEmailRead() / getReadEmailsCount()
+                                           -> Consulta e cache em memória de IDs já processados
+  - appConfig\settings.py
+      * Settings.imapServer / imapPort / emailUser / emailCheckIntervalSeconds
+  - emailService\imapClient.py             -> [STUB] Futuras queries IMAP (SEARCH UNSEEN / FETCH)
+  - emailService\emailAnalyzer.py          -> [STUB] Classificação de e-mails via Qwen 3.5
+  - emailService\emailWatcher.py           -> [STUB] Worker periódico de verificação de e-mails
+
+3.7. COMANDOS / CONSULTAS INTERATIVAS DO CONSOLE
+  - main.py (runConsoleLoop)
+      * /status ou /hw                     -> Consulta instantânea de pcStatusFacade + serialConn
+      * /limpar                            -> Limpa histórico de conversa em aiCore\memoryStore.py
+      * /sair (sair, exit, quit)           -> Dispara shutdownRuntime() e fecha a porta serial
+================================================================================
