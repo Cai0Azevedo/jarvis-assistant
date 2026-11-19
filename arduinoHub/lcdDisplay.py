@@ -41,6 +41,7 @@ class LcdDisplay:
         self._currentScreenIndex: int = 0
         self._lastLine1: str = ""
         self._lastLine2: str = ""
+        self._initialSyncLogged: bool = False
 
         self._stopEvent: threading.Event = threading.Event()
         self._workerThread: Optional[threading.Thread] = None
@@ -59,12 +60,14 @@ class LcdDisplay:
             self.eventBus.subscribe("cpuHighTempAlert", self._onCpuHighTempAlert)
             self.eventBus.subscribe("urgentEmailReceived", self._onUrgentEmailReceived)
             self.eventBus.subscribe("userPresenceDetected", self.handleUserPresence)
+            self.eventBus.subscribe("userReturned", self.handleUserReturned)
             self.eventBus.subscribe("voiceCommandReceived", self._onCommandReceived)
             self.eventBus.subscribe("userCommandReceived", self._onCommandReceived)
             self.eventBus.subscribe("jarvisStatusChanged", self._onStatusChanged)
             self.eventBus.subscribe("brainError", self._onBrainError)
             self.eventBus.subscribe("arduinoErrorAlert", self._onErrorAlert)
             self.eventBus.subscribe("arduinoDisplayMessage", self._onDisplayMessage)
+            self.eventBus.subscribe("arduinoConnectionChanged", self._onArduinoConnectionChanged)
             self._isSubscribed = True
 
     def unsubscribeFromEvents(self) -> None:
@@ -78,12 +81,14 @@ class LcdDisplay:
             self.eventBus.unsubscribe("cpuHighTempAlert", self._onCpuHighTempAlert)
             self.eventBus.unsubscribe("urgentEmailReceived", self._onUrgentEmailReceived)
             self.eventBus.unsubscribe("userPresenceDetected", self.handleUserPresence)
+            self.eventBus.unsubscribe("userReturned", self.handleUserReturned)
             self.eventBus.unsubscribe("voiceCommandReceived", self._onCommandReceived)
             self.eventBus.unsubscribe("userCommandReceived", self._onCommandReceived)
             self.eventBus.unsubscribe("jarvisStatusChanged", self._onStatusChanged)
             self.eventBus.unsubscribe("brainError", self._onBrainError)
             self.eventBus.unsubscribe("arduinoErrorAlert", self._onErrorAlert)
             self.eventBus.unsubscribe("arduinoDisplayMessage", self._onDisplayMessage)
+            self.eventBus.unsubscribe("arduinoConnectionChanged", self._onArduinoConnectionChanged)
             self._isSubscribed = False
 
     def showMessage(self, line1: str, line2: str = "") -> bool:
@@ -223,7 +228,7 @@ class LcdDisplay:
         intervalSeconds: Optional[float] = None,
         snapshotProvider: Optional[Callable[[], dict[str, Any]]] = None,
     ) -> None:
-        """Inicia thread daemon alternando telas de CPU/GPU, RAM/VRAM e Status/Hora."""
+        """Sincroniza imediatamente o LCD e inicia thread daemon alternando telas."""
         if self._workerThread is not None and self._workerThread.is_alive():
             return
 
@@ -237,6 +242,16 @@ class LcdDisplay:
         )
         refreshInterval: float = max(0.05, configuredInterval)
 
+        # Disparo síncrono imediato antes de aguardar o primeiro intervalo do carrossel
+        try:
+            initialSnapshot: dict[str, Any] = provider()
+            if isinstance(initialSnapshot, dict):
+                sent: bool = self.showTelemetry(snapshot=initialSnapshot, advanceScreen=True)
+                if sent and not self._initialSyncLogged:
+                    self._logInitialSyncPacket()
+        except Exception as error:
+            logger.debug("Falha na sincronização inicial do LCD: %s", error)
+
         self._stopEvent.clear()
         self._workerThread = threading.Thread(
             target=self._telemetryWorker,
@@ -245,6 +260,38 @@ class LcdDisplay:
             daemon=True,
         )
         self._workerThread.start()
+
+    def syncOnConnect(self) -> bool:
+        """Sincroniza o LCD imediatamente após handshake ou reconexão de rede/serial."""
+        with self._stateLock:
+            self._alertHoldUntil = 0.0
+            self._initialSyncLogged = False
+
+        sent: bool = False
+        try:
+            snapshot: dict[str, Any] = self.snapshotProvider()
+            if isinstance(snapshot, dict):
+                sent = self.showTelemetry(snapshot=snapshot, advanceScreen=False)
+        except Exception as error:
+            logger.debug("Falha ao sincronizar telemetria no handshake: %s", error)
+
+        if not sent:
+            sent = self.showMessage("JARVIS ONLINE", "SISTEMAS PRONTOS")
+
+        if sent:
+            self._logInitialSyncPacket()
+        return sent
+
+    def _logInitialSyncPacket(self) -> None:
+        """Registra no console e em jarvis.log o pacote de sincronização inicial do LCD."""
+        with self._stateLock:
+            self._initialSyncLogged = True
+            line1: str = self._lastLine1
+            line2: str = self._lastLine2
+        packetText: str = SerialProtocol.formatLcdMessage(line1, line2).strip()
+        syncMsg: str = f"[LCD DISPLAY] Sincronizacao inicial enviada: {packetText}"
+        print(syncMsg)
+        logger.info(syncMsg)
 
     def stopTelemetryLoop(self) -> None:
         """Interrompe o worker periódico de alternância de telas do LCD."""
@@ -272,14 +319,13 @@ class LcdDisplay:
         intervalSeconds: float,
     ) -> None:
         """Loop resiliente de atualização e alternância de telas no display LCD."""
-        while not self._stopEvent.is_set():
+        while not self._stopEvent.wait(intervalSeconds):
             try:
                 snapshot: dict[str, Any] = snapshotProvider()
                 if isinstance(snapshot, dict):
                     self.showTelemetry(snapshot=snapshot, advanceScreen=True)
             except Exception as error:
                 logger.debug("Erro no worker de telemetria do LCD: %s", error)
-            self._stopEvent.wait(intervalSeconds)
 
     def _onTelemetryUpdated(self, payload: Any) -> None:
         if isinstance(payload, dict):
@@ -327,6 +373,17 @@ class LcdDisplay:
             holdSeconds=holdDuration,
         )
 
+    def handleUserReturned(self, payload: Any = None) -> bool:
+        """Exibe saudação prioritária de 4s no LCD ao receber o evento 'userReturned'."""
+        holdDuration: float = float(settings.presenceGreetingTimeout)
+        if isinstance(payload, dict) and payload.get("holdSeconds") is not None:
+            holdDuration = float(payload["holdSeconds"])
+        return self.showAlert(
+            "BEM-VINDO SENHOR",
+            "JARVIS PRONTO",
+            holdSeconds=holdDuration,
+        )
+
     def _onCommandReceived(self, payload: Any) -> None:
         if isinstance(payload, dict):
             commandText: str = str(payload.get("text") or payload.get("command") or "PROCESSANDO...")
@@ -369,6 +426,11 @@ class LcdDisplay:
             self.showAlert(line1, line2, holdSeconds=float(holdSeconds))
         else:
             self.showMessage(line1, line2)
+
+    def _onArduinoConnectionChanged(self, payload: Any) -> None:
+        """Sincroniza o LCD imediatamente quando a conexão é estabelecida ou restabelecida."""
+        if isinstance(payload, dict) and payload.get("isConnected"):
+            self.syncOnConnect()
 
 
 lcdDisplay: LcdDisplay = LcdDisplay()

@@ -68,7 +68,7 @@ class Settings:
             self.arduinoConnectionType: str = (
                 os.getenv("ARDUINO_CONNECTION_TYPE", "wifi").strip().lower()
             )
-            self.arduinoHost: str = os.getenv("ARDUINO_HOST", "192.168.7.5").strip()
+            self.arduinoHost: str = os.getenv("ARDUINO_HOST", "192.168.7.4").strip()
             self.arduinoPort: int = int(os.getenv("ARDUINO_PORT", "8080"))
             self.arduinoSocketTimeout: float = float(
                 os.getenv("ARDUINO_SOCKET_TIMEOUT", "3.0")
@@ -82,14 +82,42 @@ class Settings:
             self.presenceGreetingTimeout: int = int(
                 os.getenv("PRESENCE_GREETING_TIMEOUT", "4")
             )
+            self.presenceAwayTimeoutSeconds: int = int(
+                os.getenv("PRESENCE_AWAY_TIMEOUT_SECONDS", "600")
+            )
             self.presenceTimeoutSeconds: int = int(
-                os.getenv("PRESENCE_TIMEOUT_SECONDS", "180")
+                os.getenv(
+                    "PRESENCE_TIMEOUT_SECONDS",
+                    str(self.presenceAwayTimeoutSeconds),
+                )
             )
             self.enablePresenceDetection: bool = (
                 os.getenv("ENABLE_PRESENCE_DETECTION", "true").strip().lower() == "true"
             )
             self.logFilePath: Path = self.baseDir / os.getenv(
                 "LOG_FILE_NAME", "jarvis.log"
+            )
+
+            # Configurações do Motor de Voz Neural (Fase 4 - Piper TTS 100% em CPU)
+            self.voiceEnabled: bool = (
+                os.getenv("VOICE_ENABLED", "true").strip().lower() == "true"
+            )
+            self.piperExecutablePath: str = os.getenv(
+                "PIPER_EXECUTABLE_PATH",
+                str(self.baseDir / "voiceEngine" / "piper" / "piper.exe"),
+            )
+            self.piperModelPath: str = os.getenv(
+                "PIPER_MODEL_PATH",
+                str(self.baseDir / "voiceEngine" / "models" / "pt_BR-faber-medium.onnx"),
+            )
+            self.piperConfigPath: str = os.getenv(
+                "PIPER_CONFIG_PATH",
+                f"{self.piperModelPath}.json",
+            )
+            self.piperSampleRate: int = int(os.getenv("PIPER_SAMPLE_RATE", "22050"))
+            self.piperCpuThreads: int = int(os.getenv("PIPER_CPU_THREADS", "4"))
+            self.voiceHelmetEffectEnabled: bool = (
+                os.getenv("VOICE_HELMET_EFFECT_ENABLED", "true").strip().lower() == "true"
             )
 
             # Configurações do Serviço de E-mail (IMAP)

@@ -15,9 +15,11 @@ from arduinoHub import (
     ArduinoConnection,
     LcdDisplay,
     NetworkConnection,
+    PresenceTracker,
     SensorReader,
     SerialConnection,
     lcdDisplay,
+    presenceTracker,
     sensorReader,
 )
 from pcHardware.pcStatusFacade import PcStatusFacade, pcStatusFacade
@@ -34,6 +36,7 @@ class JarvisContainer:
     display: LcdDisplay
     sensors: SensorReader
     brain: JarvisBrain
+    presence: PresenceTracker = presenceTracker
 
     @property
     def arduinoConn(self) -> ArduinoConnection:
@@ -141,6 +144,7 @@ def setupEventListeners(bus: EventBus = eventBus) -> None:
     bus.subscribe("cpuHighTempAlert", onCpuHighTempAlert)
     bus.subscribe("gamingModeChanged", onGamingModeChanged)
     bus.subscribe("userPresenceDetected", onUserPresenceDetected)
+    bus.subscribe("userReturned", onUserPresenceDetected)
     bus.subscribe("arduinoConnectionChanged", onArduinoConnectionChanged)
     bus.subscribe("arduinoButtonPressed", onArduinoButtonPressed)
 
@@ -151,6 +155,7 @@ def teardownEventListeners(bus: EventBus = eventBus) -> None:
     bus.unsubscribe("cpuHighTempAlert", onCpuHighTempAlert)
     bus.unsubscribe("gamingModeChanged", onGamingModeChanged)
     bus.unsubscribe("userPresenceDetected", onUserPresenceDetected)
+    bus.unsubscribe("userReturned", onUserPresenceDetected)
     bus.unsubscribe("arduinoConnectionChanged", onArduinoConnectionChanged)
     bus.unsubscribe("arduinoButtonPressed", onArduinoButtonPressed)
 
@@ -169,6 +174,17 @@ def formatArduinoStatus(connStatus: dict[str, Any]) -> str:
     if connStatus.get("isOpen"):
         return f"Conectado via {targetDesc}"
     return f"Modo Simulação (Mock) [{targetDesc}]"
+
+
+def printSubsystemStatus(container: JarvisContainer) -> None:
+    """Exibe no console o resumo explícito de inicialização dos subsistemas principais."""
+    arduinoConnected: bool = container.arduinoConn.isOpen()
+    arduinoStatusLabel: str = "CONECTADO" if arduinoConnected else "DESCONECTADO"
+    print("\n--- STATUS DOS SUBSISTEMAS ---")
+    print(f"[AI CORE] Ollama Online ({container.appSettings.ollamaModel})")
+    print("[PC HARDWARE] Monitoramento CPU/GPU Ativo")
+    print(f"[ARDUINO HUB] Status: {arduinoStatusLabel}")
+    print("------------------------------")
 
 
 def initializeRuntime(
@@ -196,20 +212,22 @@ def initializeRuntime(
             timeout=settings.serialTimeout,
         )
 
+    # Injeta o provedor de conexão (Wi-Fi ou Serial) antes do handshake para sincronização imediata
+    lcdDisplay.connection = arduinoConn
+    lcdDisplay.telemetryFacade = pcStatusFacade
+    lcdDisplay.snapshotProvider = pcStatusFacade.getSnapshot
+    lcdDisplay.subscribeToEvents()
+
+    presenceTracker.awayTimeoutSeconds = float(settings.presenceAwayTimeoutSeconds)
+    sensorReader.connection = arduinoConn
+    sensorReader.presenceTracker = presenceTracker
+
     # Garante inicialização resiliente (fallback automático para Mock se falhar)
     try:
         arduinoConn.connect()
     except Exception as error:
         print(f"[AVISO][Main] Falha ao iniciar conexão Arduino ({error}). Seguindo em modo Mock.")
         arduinoConn.isMockMode = True
-
-    # Injeta o provedor de conexão (Wi-Fi ou Serial) no LcdDisplay e no SensorReader
-    lcdDisplay.connection = arduinoConn
-    lcdDisplay.telemetryFacade = pcStatusFacade
-    lcdDisplay.snapshotProvider = pcStatusFacade.getSnapshot
-    lcdDisplay.subscribeToEvents()
-
-    sensorReader.connection = arduinoConn
 
     brain: JarvisBrain = JarvisBrain(
         appSettings=settings,
@@ -226,7 +244,10 @@ def initializeRuntime(
         display=lcdDisplay,
         sensors=sensorReader,
         brain=brain,
+        presence=presenceTracker,
     )
+
+    printSubsystemStatus(container)
 
     if startBackgroundWorkers:
         container.display.showOnline(detail="SISTEMA PRONTO", holdSeconds=3.0)
@@ -234,6 +255,7 @@ def initializeRuntime(
             intervalSeconds=settings.lcdRefreshIntervalSeconds,
             snapshotProvider=container.hardwareFacade.getSnapshot,
         )
+        container.presence.start()
         container.sensors.start()
 
     return container
@@ -246,6 +268,11 @@ def shutdownRuntime(container: JarvisContainer, goodbyeDelaySeconds: float = 0.3
         container.sensors.stop()
     except Exception as error:
         print(f"[AVISO][Main] Erro ao parar SensorReader: {error}")
+
+    try:
+        container.presence.stop()
+    except Exception as error:
+        print(f"[AVISO][Main] Erro ao parar PresenceTracker: {error}")
 
     try:
         container.display.showShutdown(detail="ATE LOGO!")

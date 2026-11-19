@@ -14,10 +14,13 @@ class _InteractiveConsoleFilter(logging.Filter):
 
     _SILENCED_PREFIXES: tuple[str, ...] = (
         "jarvis.sensorReader",
+        "jarvis.presenceTracker",
         "jarvis.lcdDisplay",
         "jarvis.networkConnection",
         "jarvis.serialConnection",
         "jarvis.hardware",
+        "jarvis.audioQueue",
+        "jarvis.voiceOutput",
     )
 
     def filter(self, record: logging.LogRecord) -> bool:

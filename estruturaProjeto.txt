@@ -42,6 +42,7 @@ C:\Jarvis\jarvis-assistant\
 │   ├── __init__.py                   [OK]     Exportações públicas e Factory getConnectionProvider()
 │   ├── lcdDisplay.py                 [OK]     Observer do EventBus e worker de telas alternadas (16x2)
 │   ├── networkConnection.py          [OK]     Cliente TCP Socket thread-safe (Wi-Fi ESP-01) com Mock
+│   ├── presenceTracker.py            [OK]     Máquina de estados PRESENT/AWAY (timeout 600s) e recepção
 │   ├── sensorReader.py               [OK]     Leitor daemon de pacotes <SEN:...>, <EVENT:...>, <BTN:...>
 │   ├── serialConnection.py           [OK]     Singleton thread-safe pyserial com fallback para Mock
 │   ├── serialProtocol.py             [OK]     Formatador <LCD:L1|L2> (16 chars) e parser de pacotes
@@ -60,6 +61,11 @@ C:\Jarvis\jarvis-assistant\
 │   ├── pcStatusFacade.py             [OK]     Facade getSnapshot(), Modo Jogo (>85%) e alertas térmicos
 │   └── __pycache__\                  [IGN]    Bytecode compilado Python
 │
+├── scripts\                          [OK]     Scripts de bootstrap e auto-inicialização no Windows
+│   ├── desinstalar_inicializacao.bat [OK]     Remove o atalho do JARVIS da pasta Startup do usuário
+│   ├── iniciar_jarvis.bat            [OK]     Aguarda rede (5s), ativa venv e executa python main.py
+│   └── instalar_inicializacao.bat    [OK]     Cria atalho .lnk em shell:startup sem exigir Admin
+│
 ├── skills\                           [STUB]   Fase 2 — Skills dedicadas por domínio (não implementada)
 │   ├── __init__.py                   [STUB]   (0 bytes)
 │   ├── arduinoSkills.py              [STUB]   (0 bytes)
@@ -69,14 +75,15 @@ C:\Jarvis\jarvis-assistant\
 ├── tests\                            [TEST]   Testes automatizados
 │   ├── testArduinoHub.py             [TEST]   Testes unitários + demo mock do arduinoHub e main.py
 │   ├── testPcHardware.py             [TEST]   Testes de histerese/cooldown do Modo Jogo e console
+│   ├── testVoiceEngine.py            [TEST]   Testes de AudioQueue, DSP capacete e VoiceOutput (CPU)
 │   └── __pycache__\                  [IGN]    Bytecode compilado Python
 │
-├── voiceEngine\                      [STUB]   Fase 5 — Motor de voz neural (não implementada)
-│   ├── __init__.py                   [STUB]   (0 bytes)
-│   ├── audioQueue.py                 [STUB]   (0 bytes)
-│   ├── voiceInput.py                 [STUB]   (0 bytes)
-│   ├── voiceOutput.py                [STUB]   (0 bytes)
-│   └── wakeWord.py                   [STUB]   (0 bytes)
+├── voiceEngine\                      [OK]     Fase 4/5 — Motor de voz neural 100% em CPU
+│   ├── __init__.py                   [OK]     Exporta AudioQueue, VoiceOutput e Priority
+│   ├── audioQueue.py                 [OK]     Fila de prioridade thread-safe, anti-eco e filtro DSP
+│   ├── voiceInput.py                 [STUB]   (0 bytes - STT Faster-Whisper futuro)
+│   ├── voiceOutput.py                [OK]     Síntese Piper TTS em memória (CPU) + EventBus
+│   └── wakeWord.py                   [STUB]   (0 bytes - Wake Word futuro)
 │
 ├── .git\                             [IGN]    Metadados de controle de versão Git
 └── venv\                             [IGN]    Ambiente virtual Python 3.12 (Include, Lib, Scripts)
@@ -190,8 +197,11 @@ serial USB (Arduino), barramento EventBus e consultas planejadas de IMAP.
                                      Assinado:  main.py
       * "arduinoSensorUpdated"    -> Publicado: arduinoHub\sensorReader.py
       * "arduinoEventReceived"    -> Publicado: arduinoHub\sensorReader.py
-      * "userPresenceDetected"    -> Publicado: arduinoHub\sensorReader.py (<EVENT:PRESENCE_DETECTED>)
-                                     Assinado:  arduinoHub\lcdDisplay.py (handleUserPresence)
+      * "userPresenceDetected"    -> Publicado: arduinoHub\sensorReader.py (modo standalone)
+                                     Assinado:  arduinoHub\lcdDisplay.py, main.py
+      * "userReturned"            -> Publicado: arduinoHub\presenceTracker.py (AWAY -> PRESENT)
+                                     Assinado:  arduinoHub\lcdDisplay.py (handleUserReturned), main.py
+      * "userAway"                -> Publicado: arduinoHub\presenceTracker.py (> 600s sem movimento)
       * "arduinoButtonPressed"    -> Publicado: arduinoHub\sensorReader.py
                                      Assinado:  main.py
       * "telemetryUpdated", "urgentEmailReceived", "voiceCommandReceived",

@@ -3,6 +3,7 @@ from typing import Optional, Union
 from appConfig.settings import Settings, settings
 from arduinoHub.lcdDisplay import LcdDisplay, lcdDisplay
 from arduinoHub.networkConnection import NetworkConnection, networkConnection
+from arduinoHub.presenceTracker import PresenceTracker, presenceTracker
 from arduinoHub.sensorReader import SensorReader, sensorReader
 from arduinoHub.serialConnection import SerialConnection, serialConnection
 from arduinoHub.serialProtocol import SerialProtocol, formatLcdMessage, parseIncoming
@@ -38,6 +39,7 @@ __all__: list[str] = [
     "ArduinoConnection",
     "LcdDisplay",
     "NetworkConnection",
+    "PresenceTracker",
     "SensorReader",
     "SerialConnection",
     "SerialProtocol",
@@ -46,6 +48,7 @@ __all__: list[str] = [
     "lcdDisplay",
     "networkConnection",
     "parseIncoming",
+    "presenceTracker",
     "sensorReader",
     "serialConnection",
 ]

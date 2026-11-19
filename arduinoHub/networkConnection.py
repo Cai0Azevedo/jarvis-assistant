@@ -14,10 +14,11 @@ logger = getLogger("jarvis.networkConnection")
 class NetworkConnection:
     """Conexão TCP Socket thread-safe para Ponte Wi-Fi ESP-01 + Arduino UNO (Subfase 3.1)."""
 
-    DEFAULT_HOST: str = "192.168.7.5"
+    DEFAULT_HOST: str = "192.168.7.4"
     DEFAULT_PORT: int = 8080
     DEFAULT_TIMEOUT: float = 3.0
     RECV_BUFFER_SIZE: int = 1024
+    DEFAULT_RECONNECT_INTERVAL_SECONDS: float = 5.0
 
     def __init__(
         self,
@@ -27,6 +28,8 @@ class NetworkConnection:
         bus: Optional[EventBus] = None,
         appSettings: Optional[Settings] = None,
         autoConnect: bool = False,
+        autoReconnect: bool = True,
+        reconnectIntervalSeconds: float = DEFAULT_RECONNECT_INTERVAL_SECONDS,
     ) -> None:
         self.settings: Settings = appSettings or settings
         self.eventBus: EventBus = bus or eventBus
@@ -52,6 +55,12 @@ class NetworkConnection:
         self.isConnected: bool = False
         self.isMockMode: bool = False
         self._warnedMockMode: bool = False
+        self._hasConnectedOnce: bool = False
+        self._connectionLost: bool = False
+        self.autoReconnect: bool = autoReconnect
+        self.reconnectIntervalSeconds: float = max(0.2, float(reconnectIntervalSeconds))
+        self._reconnectStopEvent: threading.Event = threading.Event()
+        self._reconnectThread: Optional[threading.Thread] = None
 
         self._mockTxHistory: deque[str] = deque(maxlen=100)
         self._mockRxQueue: deque[str] = deque(maxlen=100)
@@ -78,16 +87,24 @@ class NetworkConnection:
 
             self._socket = sock
             self._rxBuffer.clear()
+            isReconnection: bool = self._hasConnectedOnce and self._connectionLost
             self.isConnected = True
             self.isMockMode = False
             self._warnedMockMode = False
-            logger.info(
-                "Conectado ao Arduino/ESP-01 via Wi-Fi em %s:%s (timeout=%ss).",
-                self.host,
-                self.port,
-                self.timeout,
-            )
-            self._publishConnectionState(connected=True, mockMode=False)
+            self._hasConnectedOnce = True
+            self._connectionLost = False
+
+            if isReconnection:
+                msg: str = "[ARDUINO HUB] Reconectado com sucesso ao Arduino Hub!"
+                print(msg)
+                logger.info(msg)
+            else:
+                msg = (
+                    f"[ARDUINO HUB] Conectado com sucesso ao Hub Wi-Fi "
+                    f"({self.host}:{self.port})."
+                )
+                print(msg)
+                logger.info(msg)
             return True
         except (ConnectionRefusedError, TimeoutError, socket.timeout, OSError, Exception) as error:
             if sock is not None:
@@ -96,6 +113,13 @@ class NetworkConnection:
                 except Exception:
                     pass
             self._closeSocketUnlocked()
+            if not self._connectionLost and not self._warnedMockMode:
+                failMsg: str = (
+                    f"[ARDUINO HUB] AVISO: Nao foi possivel conectar ao Arduino em "
+                    f"{self.host}:{self.port} (Motivo: {error}). Operando em modo desacoplado."
+                )
+                print(failMsg)
+                logger.warning(failMsg)
             self._enterMockModeUnlocked(
                 f"Servidor TCP {self.host}:{self.port} indisponível ({error})."
             )
@@ -103,6 +127,7 @@ class NetworkConnection:
 
     def connect(self, forceReconnect: bool = False) -> bool:
         """Estabelece a conexão TCP com o ESP-01; entra em modo Mock se falhar."""
+        newlyConnected: bool = False
         with self._lock:
             if self.isOpenUnlocked() and not forceReconnect:
                 return True
@@ -110,13 +135,29 @@ class NetworkConnection:
             if forceReconnect and self._socket is not None:
                 self._closeSocketUnlocked()
 
-            return self._openSocketUnlocked()
+            newlyConnected = self._openSocketUnlocked()
+
+        if newlyConnected:
+            self._publishConnectionState(connected=True, mockMode=False)
+        return newlyConnected
 
     def disconnect(self) -> None:
-        """Encerra o socket TCP com segurança e reseta as flags de estado."""
+        """Encerra o socket TCP e eventual worker de reconexão com segurança."""
+        self._reconnectStopEvent.set()
+        reconnectThread: Optional[threading.Thread] = self._reconnectThread
+        if (
+            reconnectThread is not None
+            and reconnectThread.is_alive()
+            and reconnectThread is not threading.current_thread()
+        ):
+            reconnectThread.join(timeout=1.5)
         with self._lock:
+            self._reconnectThread = None
             self._closeSocketUnlocked()
             self.isMockMode = False
+            self._connectionLost = False
+            self._hasConnectedOnce = False
+            self._warnedMockMode = False
             self._rxBuffer.clear()
 
     def close(self) -> None:
@@ -157,7 +198,6 @@ class NetworkConnection:
                 OSError,
                 Exception,
             ) as error:
-                self._closeSocketUnlocked()
                 self._enterMockModeUnlocked(
                     f"Desconexão ao enviar para {self.host}:{self.port} ({error})."
                 )
@@ -179,7 +219,6 @@ class NetworkConnection:
             try:
                 chunk: bytes = self._socket.recv(self.RECV_BUFFER_SIZE)
                 if not chunk:
-                    self._closeSocketUnlocked()
                     self._enterMockModeUnlocked(
                         f"Conexão encerrada pelo servidor {self.host}:{self.port}."
                     )
@@ -189,7 +228,6 @@ class NetworkConnection:
             except (socket.timeout, TimeoutError, BlockingIOError):
                 return None
             except (ConnectionResetError, ConnectionAbortedError, OSError, Exception) as error:
-                self._closeSocketUnlocked()
                 self._enterMockModeUnlocked(
                     f"Falha ao ler do servidor {self.host}:{self.port} ({error})."
                 )
@@ -210,7 +248,6 @@ class NetworkConnection:
                     if self._hasPendingSocketBytesUnlocked():
                         chunk: bytes = self._socket.recv(self.RECV_BUFFER_SIZE)
                         if not chunk:
-                            self._closeSocketUnlocked()
                             self._enterMockModeUnlocked(
                                 f"Conexão encerrada pelo servidor {self.host}:{self.port}."
                             )
@@ -221,7 +258,6 @@ class NetworkConnection:
                 except (socket.timeout, TimeoutError, BlockingIOError):
                     return None
                 except (ConnectionResetError, ConnectionAbortedError, OSError, Exception) as error:
-                    self._closeSocketUnlocked()
                     self._enterMockModeUnlocked(
                         f"Falha ao ler do servidor {self.host}:{self.port} ({error})."
                     )
@@ -297,16 +333,46 @@ class NetworkConnection:
     def _enterMockModeUnlocked(self, reason: str) -> None:
         """Ativa o modo simulação/mock sem interromper o fluxo do assistente."""
         wasConnected: bool = self.isConnected
-        self.isConnected = False
+        self._closeSocketUnlocked()
         self.isMockMode = True
-        if not self._warnedMockMode:
+        if wasConnected:
+            self._connectionLost = True
+            lostMsg: str = (
+                "[ARDUINO HUB] Conexao perdida com o Arduino. "
+                "Iniciando tentativas de reconexao em segundo plano..."
+            )
+            print(lostMsg)
+            logger.warning("%s (%s)", lostMsg, reason)
+            self._warnedMockMode = True
+            self._publishConnectionState(connected=False, mockMode=True)
+            if self.autoReconnect:
+                self._startReconnectWorkerUnlocked()
+        elif not self._warnedMockMode:
             logger.warning(
                 "%s Operando em modo simulação/mock (sem hardware físico).",
                 reason,
             )
             self._warnedMockMode = True
-        if wasConnected:
-            self._publishConnectionState(connected=False, mockMode=True)
+
+    def _startReconnectWorkerUnlocked(self) -> None:
+        """Inicia thread daemon de reconexão automática após queda da conexão TCP."""
+        if self._reconnectThread is not None and self._reconnectThread.is_alive():
+            return
+        self._reconnectStopEvent.clear()
+        self._reconnectThread = threading.Thread(
+            target=self._reconnectLoop,
+            name="jarvisArduinoWifiReconnect",
+            daemon=True,
+        )
+        self._reconnectThread.start()
+
+    def _reconnectLoop(self) -> None:
+        """Tenta restabelecer a conexão TCP em segundo plano até conectar ou encerrar."""
+        while not self._reconnectStopEvent.wait(self.reconnectIntervalSeconds):
+            if self.isOpen():
+                return
+            if self.connect(forceReconnect=True):
+                return
 
     def _closeSocketUnlocked(self) -> None:
         """Fecha o socket TCP interno mantendo ``_lock`` adquirido."""

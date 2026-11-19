@@ -23,10 +23,12 @@ class SensorReader:
         bus: Optional[EventBus] = None,
         appSettings: Optional[Settings] = None,
         presenceTimeoutSeconds: Optional[float] = None,
+        presenceTracker: Optional[Any] = None,
     ) -> None:
         self.connection: Any = connection or serialConnection
         self.eventBus: EventBus = bus or eventBus
         self.settings: Settings = appSettings or settings
+        self.presenceTracker: Optional[Any] = presenceTracker
 
         self._sensorsLock: threading.Lock = threading.Lock()
         self._latestSensors: dict[str, Any] = {}
@@ -161,7 +163,7 @@ class SensorReader:
             )
         elif packetType == "EVENT" or cleanedLine.startswith("<EVENT:"):
             eventName: str = str(packet.get("name", "")).upper()
-            if eventName == "PRESENCE_DETECTED":
+            if eventName == "PRESENCE_DETECTED" and self.presenceTracker is None:
                 self._handlePresenceDetected()
 
             self.eventBus.publish(

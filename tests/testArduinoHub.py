@@ -20,6 +20,7 @@ from aiCore.eventBus import EventBus
 from arduinoHub import (
     LcdDisplay,
     NetworkConnection,
+    PresenceTracker,
     SensorReader,
     SerialConnection,
     SerialProtocol,
@@ -27,6 +28,7 @@ from arduinoHub import (
     getConnectionProvider,
     lcdDisplay,
     parseIncoming,
+    presenceTracker,
     sensorReader,
     serialConnection,
 )
@@ -155,7 +157,7 @@ class TestArduinoHub(unittest.TestCase):
             mockSocketCls.return_value = mockSockInstance
 
             netConn: NetworkConnection = NetworkConnection(
-                host="192.168.7.5",
+                host="192.168.7.4",
                 port=8080,
                 timeout=3.0,
                 bus=self.bus,
@@ -167,7 +169,7 @@ class TestArduinoHub(unittest.TestCase):
             self.assertFalse(netConn.isMockMode)
             self.assertTrue(netConn.isOpen())
             mockSockInstance.settimeout.assert_called_once_with(3.0)
-            mockSockInstance.connect.assert_called_once_with(("192.168.7.5", 8080))
+            mockSockInstance.connect.assert_called_once_with(("192.168.7.4", 8080))
 
             receivedText: Any = netConn.read()
             self.assertEqual(receivedText, "<SEN:TEMP:25>")
@@ -185,7 +187,7 @@ class TestArduinoHub(unittest.TestCase):
             mockSocketCls.return_value = mockSockInstance
 
             netConn: NetworkConnection = NetworkConnection(
-                host="192.168.7.5",
+                host="192.168.7.4",
                 port=8080,
                 timeout=3.0,
                 bus=self.bus,
@@ -202,7 +204,7 @@ class TestArduinoHub(unittest.TestCase):
             mockSocketCls.return_value = mockSockTimeout
 
             netConnTimeout: NetworkConnection = NetworkConnection(
-                host="192.168.7.5",
+                host="192.168.7.4",
                 port=8080,
                 timeout=3.0,
                 bus=self.bus,
@@ -217,7 +219,7 @@ class TestArduinoHub(unittest.TestCase):
             mockSocketCls.return_value = mockSockInstance
 
             netConn: NetworkConnection = NetworkConnection(
-                host="192.168.7.5",
+                host="192.168.7.4",
                 port=8080,
                 timeout=3.0,
                 bus=self.bus,
@@ -257,6 +259,7 @@ class TestArduinoHub(unittest.TestCase):
             self.assertTrue(netConn.isMockMode)
             self.assertFalse(netConn.isConnected)
             self.assertEqual(len(netConn.getMockTxHistory()), 1)
+            netConn.disconnect()
 
     def testLcdDisplayStatusErrorAndAlternatingTelemetry(self) -> None:
         self.assertTrue(self.display.showOnline(holdSeconds=0.0))
@@ -400,6 +403,75 @@ class TestArduinoHub(unittest.TestCase):
         self.assertTrue(self.reader.isUserPresent)
         self.assertEqual(len(presenceEvents), 2)
 
+    def testPresenceTracker600sStateMachineAndUserReturnedLcdGreeting(self) -> None:
+        returnedEvents: list[dict[str, Any]] = []
+        awayEvents: list[dict[str, Any]] = []
+        self.bus.subscribe("userReturned", lambda p: returnedEvents.append(p))
+        self.bus.subscribe("userAway", lambda p: awayEvents.append(p))
+
+        tracker: PresenceTracker = PresenceTracker(bus=self.bus, autoSubscribe=True)
+        integratedReader: SensorReader = SensorReader(
+            connection=self.conn,
+            bus=self.bus,
+            presenceTracker=tracker,
+        )
+        try:
+            # 1) Limiar padrão oficial deve ser exatamente 600s (10 minutos)
+            self.assertEqual(tracker.awayTimeoutSeconds, 600.0)
+            self.assertEqual(tracker.state, PresenceTracker.STATE_AWAY)
+
+            # 2) Primeiro pulso PIR após estado AWAY -> PRESENT e dispara "userReturned"
+            t0: float = 1000.0
+            tracker.reset(initialState=PresenceTracker.STATE_AWAY, currentTime=900.0)
+            self.assertTrue(tracker.recordPresence(currentTime=t0))
+            time.sleep(0.06)
+            self.assertEqual(tracker.state, PresenceTracker.STATE_PRESENT)
+            self.assertEqual(len(returnedEvents), 1)
+            self.assertEqual(returnedEvents[0]["timestamp"], t0)
+            self.assertAlmostEqual(returnedEvents[0]["absenceDuration"], 100.0, places=2)
+
+            # 3) Pulsos contínuos dentro da janela de 600s mantêm PRESENT sem reenviar boas-vindas
+            self.assertFalse(tracker.recordPresence(currentTime=t0 + 120.0))
+            self.assertFalse(tracker.recordPresence(currentTime=t0 + 500.0))
+            self.assertFalse(tracker.checkInactivity(currentTime=t0 + 550.0))
+            time.sleep(0.06)
+            self.assertEqual(tracker.state, PresenceTracker.STATE_PRESENT)
+            self.assertEqual(len(returnedEvents), 1)
+            self.assertEqual(len(awayEvents), 0)
+
+            # 4) Inatividade > 600s após último movimento (t0 + 500 + 601 = t0 + 1101) -> AWAY
+            self.assertTrue(tracker.checkInactivity(currentTime=t0 + 1101.0))
+            time.sleep(0.06)
+            self.assertEqual(tracker.state, PresenceTracker.STATE_AWAY)
+            self.assertEqual(len(awayEvents), 1)
+
+            # 5) Novo evento via SensorReader integrado após AWAY -> dispara "userReturned" + LCD
+            self.conn.clearMockTxHistory()
+            self.conn.enqueueMockInput("<EVENT:PRESENCE_DETECTED>\n")
+            integratedReader.pollOnce()
+            time.sleep(0.08)
+            self.assertEqual(tracker.state, PresenceTracker.STATE_PRESENT)
+            self.assertEqual(len(returnedEvents), 2)
+            self.assertIn(
+                "<LCD:BEM-VINDO SENHOR|JARVIS PRONTO   >",
+                self.conn.getMockTxHistory(),
+            )
+            # Durante o hold padrão de 4s, telemetria fica pausada
+            self.assertFalse(self.display.showTelemetry(screenIndex=0))
+
+            # Valida retomada automática da telemetria após expirar o hold
+            self.display.handleUserReturned({"holdSeconds": 0.12})
+            self.assertFalse(self.display.showTelemetry(screenIndex=0))
+            time.sleep(0.15)
+            self.assertTrue(self.display.showTelemetry(screenIndex=0))
+            self.assertEqual(
+                self.display.getLastDisplayedLines(),
+                ("CPU: 45% 58C    ", "GPU: 62% 65C    "),
+            )
+        finally:
+            tracker.stop()
+            integratedReader.stop()
+
     def testLcdDisplayHandleUserPresenceFreezesAndResumesCarousel(self) -> None:
         self.conn.clearMockTxHistory()
         # Publica userPresenceDetected com hold curto para validar congelamento e retomada
@@ -431,6 +503,114 @@ class TestArduinoHub(unittest.TestCase):
         self.assertEqual(l1After, "CPU: 45% 58C    ")
         self.assertEqual(l2After, "GPU: 62% 65C    ")
 
+    def testLcdDisplayImmediateSyncOnHandshakeAndReconnect(self) -> None:
+        with patch("socket.socket") as mockSocketCls:
+            mockSockInstance: MagicMock = MagicMock()
+            mockSocketCls.return_value = mockSockInstance
+
+            netConn: NetworkConnection = NetworkConnection(
+                host="192.168.7.4",
+                port=8080,
+                timeout=3.0,
+                bus=self.bus,
+                reconnectIntervalSeconds=0.2,
+            )
+            wifiDisplay: LcdDisplay = LcdDisplay(
+                connection=netConn,
+                bus=self.bus,
+                snapshotProvider=lambda: self.mockSnapshot,
+                autoSubscribe=True,
+            )
+            try:
+                # 1) Handshake inicial -> log explícito de conexão e sincronização inicial
+                stdoutBuf = io.StringIO()
+                with contextlib.redirect_stdout(stdoutBuf):
+                    self.assertTrue(netConn.connect())
+                    time.sleep(0.08)
+
+                outputInitial: str = stdoutBuf.getvalue()
+                self.assertIn(
+                    "[ARDUINO HUB] Conectado com sucesso ao Hub Wi-Fi (192.168.7.4:8080).",
+                    outputInitial,
+                )
+                self.assertIn(
+                    "[LCD DISPLAY] Sincronizacao inicial enviada: <LCD:CPU: 45% 58C    |GPU: 62% 65C    >",
+                    outputInitial,
+                )
+                self.assertGreaterEqual(mockSockInstance.sendall.call_count, 1)
+
+                # 2) Queda abrupta -> log de perda e reconexão automática em segundo plano
+                mockSockInstance.sendall.side_effect = ConnectionResetError("Queda Wi-Fi")
+                dropBuf = io.StringIO()
+                with contextlib.redirect_stdout(dropBuf):
+                    netConn.send(formatLcdMessage("TESTE", "QUEDA"))
+                    self.assertTrue(netConn.isMockMode)
+                    self.assertIn(
+                        "[ARDUINO HUB] Conexao perdida com o Arduino. "
+                        "Iniciando tentativas de reconexao em segundo plano...",
+                        dropBuf.getvalue(),
+                    )
+
+                    # Restaura socket antes da tentativa em background (0.2s)
+                    mockSockInstance.sendall.side_effect = None
+                    time.sleep(0.32)
+
+                reconnectOutput: str = dropBuf.getvalue()
+                self.assertIn(
+                    "[ARDUINO HUB] Reconectado com sucesso ao Arduino Hub!",
+                    reconnectOutput,
+                )
+                self.assertIn(
+                    "[LCD DISPLAY] Sincronizacao inicial enviada: <LCD:",
+                    reconnectOutput,
+                )
+                self.assertTrue(netConn.isConnected)
+                self.assertFalse(netConn.isMockMode)
+            finally:
+                wifiDisplay.shutdown()
+                netConn.disconnect()
+
+    def testTerminalVisibilityOnFailureAndMainSubsystemStatus(self) -> None:
+        with (
+            patch("socket.socket") as mockSocketCls,
+            patch.object(pcStatusFacade, "getSnapshot", return_value=self.mockSnapshot),
+            patch.object(pcStatusFacade, "shutdown"),
+            patch.object(self.bus, "shutdown"),
+        ):
+            mockSockInstance: MagicMock = MagicMock()
+            mockSockInstance.connect.side_effect = ConnectionRefusedError("ESP-01 em boot")
+            mockSocketCls.return_value = mockSockInstance
+
+            bootBuf = io.StringIO()
+            with contextlib.redirect_stdout(bootBuf):
+                container: jarvisMain.JarvisContainer = jarvisMain.initializeRuntime(
+                    startBackgroundWorkers=False,
+                    connectionType="wifi",
+                )
+                jarvisMain.shutdownRuntime(container, goodbyeDelaySeconds=0.0)
+
+            bootText: str = bootBuf.getvalue()
+            self.assertIn(
+                "[ARDUINO HUB] AVISO: Nao foi possivel conectar ao Arduino em 192.168.7.4:8080 "
+                "(Motivo: ESP-01 em boot). Operando em modo desacoplado.",
+                bootText,
+            )
+            self.assertIn("--- STATUS DOS SUBSISTEMAS ---", bootText)
+            self.assertIn(f"[AI CORE] Ollama Online ({container.appSettings.ollamaModel})", bootText)
+            self.assertIn("[PC HARDWARE] Monitoramento CPU/GPU Ativo", bootText)
+            self.assertIn("[ARDUINO HUB] Status: DESCONECTADO", bootText)
+
+    def testStartTelemetryLoopDispatchesSynchronouslyBeforeInterval(self) -> None:
+        self.conn.clearMockTxHistory()
+        # Mesmo com intervalo longo (10s), o primeiro pacote deve ser enviado de forma imediata
+        self.display.startTelemetryLoop(intervalSeconds=10.0)
+        try:
+            txImmediate: list[str] = self.conn.getMockTxHistory()
+            self.assertEqual(len(txImmediate), 1)
+            self.assertIn("CPU: 45% 58C", txImmediate[0])
+        finally:
+            self.display.stopTelemetryLoop()
+
     def testMainLifecycleInitializeWifiAndSerialFallback(self) -> None:
         # 1. Valida Factory getConnectionProvider e formatação de status
         wifiProvider = getConnectionProvider("wifi")
@@ -439,9 +619,9 @@ class TestArduinoHub(unittest.TestCase):
         self.assertIsInstance(serialProvider, SerialConnection)
 
         self.assertIn(
-            "Wi-Fi (192.168.7.5:8080)",
+            "Wi-Fi (192.168.7.4:8080)",
             jarvisMain.formatArduinoStatus(
-                {"connectionType": "wifi", "host": "192.168.7.5", "port": 8080, "isOpen": True}
+                {"connectionType": "wifi", "host": "192.168.7.4", "port": 8080, "isOpen": True}
             ),
         )
         self.assertIn(
@@ -453,7 +633,7 @@ class TestArduinoHub(unittest.TestCase):
         self.assertIn(
             "Modo Simulação (Mock)",
             jarvisMain.formatArduinoStatus(
-                {"connectionType": "wifi", "host": "192.168.7.5", "port": 8080, "isOpen": False}
+                {"connectionType": "wifi", "host": "192.168.7.4", "port": 8080, "isOpen": False}
             ),
         )
 
@@ -476,6 +656,8 @@ class TestArduinoHub(unittest.TestCase):
                 self.assertIsInstance(container.arduinoConn, NetworkConnection)
                 self.assertIs(container.display.connection, container.arduinoConn)
                 self.assertIs(container.sensors.connection, container.arduinoConn)
+                self.assertIs(container.presence, presenceTracker)
+                self.assertIs(container.sensors.presenceTracker, presenceTracker)
                 self.assertTrue(container.arduinoConn.isMockMode)
 
                 time.sleep(0.08)
