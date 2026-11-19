@@ -4,7 +4,10 @@ from collections import deque
 from typing import Any, Optional
 
 from aiCore.eventBus import EventBus, eventBus
+from appConfig.loggingConfig import getLogger
 from appConfig.settings import Settings, settings
+
+logger = getLogger("jarvis.serialConnection")
 
 try:
     import serial
@@ -40,17 +43,31 @@ class SerialConnection:
         timeout: Optional[float] = None,
         bus: Optional[EventBus] = None,
         appSettings: Optional[Settings] = None,
+        port: Optional[str] = None,
+        autoConnect: bool = False,
     ) -> None:
+        resolvedPort: Optional[str] = port or comPort
         if self._initialized:
+            with self._instanceLock:
+                if resolvedPort is not None:
+                    self.comPort = resolvedPort
+                if baudRate is not None:
+                    self.baudRate = baudRate
+                if timeout is not None:
+                    self.timeout = timeout
+            if autoConnect:
+                self.connect()
             return
+
         with self._instanceLock:
             if self._initialized:
                 return
 
             self.settings: Settings = appSettings or settings
             self.eventBus: EventBus = bus or eventBus
+            self.connectionType: str = "serial"
 
-            self.comPort: str = comPort or self.settings.comPort
+            self.comPort: str = resolvedPort or self.settings.comPort
             self.baudRate: int = (
                 baudRate
                 if baudRate is not None
@@ -60,7 +77,8 @@ class SerialConnection:
                 timeout if timeout is not None else self.settings.serialTimeout
             )
 
-            self._ioLock: threading.Lock = threading.Lock()
+            self._lock: threading.Lock = threading.Lock()
+            self._ioLock: threading.Lock = self._lock
             self._serial: Any = None
             self._rxBuffer: bytearray = bytearray()
             self.isConnected: bool = False
@@ -71,7 +89,8 @@ class SerialConnection:
             self._mockRxQueue: deque[str] = deque(maxlen=100)
             self._initialized = True
 
-            self.connect()
+            if autoConnect:
+                self.connect()
 
     @property
     def is_mock(self) -> bool:
@@ -83,7 +102,7 @@ class SerialConnection:
         self.isMockMode = bool(value)
 
     def _openSerialUnlocked(self) -> bool:
-        """Tenta abrir a porta serial mantendo ``_ioLock`` já adquirido."""
+        """Tenta abrir a porta serial mantendo ``_lock`` já adquirido."""
         if serial is None:
             self._enterMockModeUnlocked(
                 "Biblioteca 'pyserial' não instalada no ambiente virtual."
@@ -103,9 +122,10 @@ class SerialConnection:
             self.isConnected = True
             self.isMockMode = False
             self._warnedMockMode = False
-            print(
-                f"[INFO][SerialConnection] Conectado ao Arduino UNO em "
-                f"{self.comPort} ({self.baudRate} baud)."
+            logger.info(
+                "Conectado ao Arduino UNO em %s (%s baud).",
+                self.comPort,
+                self.baudRate,
             )
             self._publishConnectionState(connected=True, mockMode=False)
             return True
@@ -118,7 +138,7 @@ class SerialConnection:
 
     def connect(self, forceReconnect: bool = False) -> bool:
         """Tenta abrir a porta serial do Arduino UNO; entra em modo simulação/mock se falhar."""
-        with self._ioLock:
+        with self._lock:
             if self.isOpenUnlocked() and not forceReconnect:
                 return True
 
@@ -129,7 +149,7 @@ class SerialConnection:
 
     def disconnect(self) -> None:
         """Fecha a porta serial com segurança e limpa os buffers internos."""
-        with self._ioLock:
+        with self._lock:
             self._closeSerialHandleUnlocked()
             self.isMockMode = False
             self._rxBuffer.clear()
@@ -139,12 +159,12 @@ class SerialConnection:
         self.disconnect()
 
     def isOpen(self) -> bool:
-        """Retorna True se a porta serial física estiver aberta ou em modo mock ativo."""
-        with self._ioLock:
+        """Retorna True se a porta serial física estiver aberta."""
+        with self._lock:
             return self.isOpenUnlocked()
 
     def isOpenUnlocked(self) -> bool:
-        """Verifica estado da porta mantendo ``_ioLock`` adquirido."""
+        """Verifica estado da porta mantendo ``_lock`` adquirido."""
         return (
             self.isConnected
             and self._serial is not None
@@ -155,7 +175,7 @@ class SerialConnection:
         """Envia uma mensagem pela porta serial de forma thread-safe ou simula no console."""
         formattedPacket: str = data if data.endswith("\n") else f"{data}\n"
 
-        with self._ioLock:
+        with self._lock:
             if not self.isOpenUnlocked() and not self.isMockMode:
                 self._openSerialUnlocked()
 
@@ -180,9 +200,13 @@ class SerialConnection:
         """Alias compatível para ``send(data)``."""
         return self.send(packet)
 
+    def read(self) -> Optional[str]:
+        """Alias compatível com NetworkConnection para leitura thread-safe de linha."""
+        return self.readLine()
+
     def readLine(self) -> Optional[str]:
         """Lê uma linha completa da porta serial sem bloquear escritas concorrentes."""
-        with self._ioLock:
+        with self._lock:
             if self.isMockMode or not self.isOpenUnlocked():
                 if self._mockRxQueue:
                     return self._mockRxQueue.popleft()
@@ -215,23 +239,25 @@ class SerialConnection:
         cleanPacket: str = packet.strip()
         if not cleanPacket:
             return
-        with self._ioLock:
+        with self._lock:
             self._mockRxQueue.append(cleanPacket)
 
     def getMockTxHistory(self) -> list[str]:
         """Retorna os últimos pacotes registrados em modo simulação/mock."""
-        with self._ioLock:
+        with self._lock:
             return list(self._mockTxHistory)
 
     def clearMockTxHistory(self) -> None:
         """Limpa o histórico de pacotes simulados (útil em testes unitários)."""
-        with self._ioLock:
+        with self._lock:
             self._mockTxHistory.clear()
 
     def getStatus(self) -> dict[str, Any]:
         """Retorna o estado atual da conexão serial."""
-        with self._ioLock:
+        with self._lock:
             return {
+                "connectionType": "serial",
+                "endpoint": f"{self.comPort}",
                 "comPort": self.comPort,
                 "baudRate": self.baudRate,
                 "isOpen": self.isOpenUnlocked(),
@@ -242,10 +268,10 @@ class SerialConnection:
             }
 
     def _recordMockTxUnlocked(self, formattedPacket: str) -> None:
-        """Registra e exibe no console o pacote simulado mantendo ``_ioLock`` adquirido."""
+        """Registra no histórico e em jarvis.log o pacote simulado sem poluir o prompt do console."""
         cleanPacket: str = formattedPacket.rstrip("\r\n")
         self._mockTxHistory.append(cleanPacket)
-        print(f"[MOCK][Arduino TX] {cleanPacket}")
+        logger.debug("[MOCK][Arduino TX] %s", cleanPacket)
 
     def _enterMockModeUnlocked(self, reason: str) -> None:
         """Ativa o modo simulação/mock sem interromper o fluxo do assistente."""
@@ -253,9 +279,9 @@ class SerialConnection:
         self.isConnected = False
         self.isMockMode = True
         if not self._warnedMockMode:
-            print(
-                f"[AVISO][SerialConnection] {reason} "
-                "Operando em modo simulação/mock (sem hardware físico)."
+            logger.warning(
+                "%s Operando em modo simulação/mock (sem hardware físico).",
+                reason,
             )
             self._warnedMockMode = True
         if wasConnected:
@@ -278,6 +304,8 @@ class SerialConnection:
         self.eventBus.publish(
             "arduinoConnectionChanged",
             {
+                "connectionType": "serial",
+                "endpoint": self.comPort,
                 "comPort": self.comPort,
                 "baudRate": self.baudRate,
                 "isConnected": connected,
@@ -286,4 +314,4 @@ class SerialConnection:
         )
 
 
-serialConnection: SerialConnection = SerialConnection()
+serialConnection: SerialConnection = SerialConnection(autoConnect=False)

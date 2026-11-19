@@ -4,10 +4,13 @@ from datetime import datetime
 from typing import Any, Callable, Optional
 
 from aiCore.eventBus import EventBus, eventBus
+from appConfig.loggingConfig import getLogger
 from appConfig.settings import settings
 from arduinoHub.serialConnection import SerialConnection, serialConnection
 from arduinoHub.serialProtocol import SerialProtocol
 from pcHardware.pcStatusFacade import PcStatusFacade, pcStatusFacade
+
+logger = getLogger("jarvis.lcdDisplay")
 
 
 class LcdDisplay:
@@ -19,13 +22,13 @@ class LcdDisplay:
 
     def __init__(
         self,
-        connection: Optional[SerialConnection] = None,
+        connection: Optional[Any] = None,
         bus: Optional[EventBus] = None,
         telemetryFacade: Optional[PcStatusFacade] = None,
         snapshotProvider: Optional[Callable[[], dict[str, Any]]] = None,
         autoSubscribe: bool = True,
     ) -> None:
-        self.connection: SerialConnection = connection or serialConnection
+        self.connection: Any = connection or serialConnection
         self.eventBus: EventBus = bus or eventBus
         self.telemetryFacade: PcStatusFacade = telemetryFacade or pcStatusFacade
         self.snapshotProvider: Callable[[], dict[str, Any]] = (
@@ -55,6 +58,7 @@ class LcdDisplay:
             self.eventBus.subscribe("gpuHighTempAlert", self._onGpuHighTempAlert)
             self.eventBus.subscribe("cpuHighTempAlert", self._onCpuHighTempAlert)
             self.eventBus.subscribe("urgentEmailReceived", self._onUrgentEmailReceived)
+            self.eventBus.subscribe("userPresenceDetected", self.handleUserPresence)
             self.eventBus.subscribe("voiceCommandReceived", self._onCommandReceived)
             self.eventBus.subscribe("userCommandReceived", self._onCommandReceived)
             self.eventBus.subscribe("jarvisStatusChanged", self._onStatusChanged)
@@ -73,6 +77,7 @@ class LcdDisplay:
             self.eventBus.unsubscribe("gpuHighTempAlert", self._onGpuHighTempAlert)
             self.eventBus.unsubscribe("cpuHighTempAlert", self._onCpuHighTempAlert)
             self.eventBus.unsubscribe("urgentEmailReceived", self._onUrgentEmailReceived)
+            self.eventBus.unsubscribe("userPresenceDetected", self.handleUserPresence)
             self.eventBus.unsubscribe("voiceCommandReceived", self._onCommandReceived)
             self.eventBus.unsubscribe("userCommandReceived", self._onCommandReceived)
             self.eventBus.unsubscribe("jarvisStatusChanged", self._onStatusChanged)
@@ -273,7 +278,7 @@ class LcdDisplay:
                 if isinstance(snapshot, dict):
                     self.showTelemetry(snapshot=snapshot, advanceScreen=True)
             except Exception as error:
-                print(f"[AVISO][LcdDisplay] Erro no worker de telemetria do LCD: {error}")
+                logger.debug("Erro no worker de telemetria do LCD: %s", error)
             self._stopEvent.wait(intervalSeconds)
 
     def _onTelemetryUpdated(self, payload: Any) -> None:
@@ -283,7 +288,9 @@ class LcdDisplay:
     def _onGamingModeChanged(self, payload: Any) -> None:
         if not isinstance(payload, dict):
             return
-        isGaming: bool = bool(payload.get("isGamingMode", False))
+        isGaming: bool = bool(
+            payload.get("active", payload.get("isGamingMode", False))
+        )
         gpuUsage: int = round(float(payload.get("gpuUsage", 0.0)))
         if isGaming:
             self.showAlert("MODO JOGO ATIVO", f"GPU em {gpuUsage}%")
@@ -308,6 +315,17 @@ class LcdDisplay:
             self.showAlert("EMAIL URGENTE!", sender, holdSeconds=6.0)
         else:
             self.showAlert("EMAIL URGENTE!", "Verifique inbox", holdSeconds=6.0)
+
+    def handleUserPresence(self, payload: Any = None) -> bool:
+        """Rotina visual de recepção acionada quando o sensor PIR detecta presença física."""
+        holdDuration: float = float(settings.presenceGreetingTimeout)
+        if isinstance(payload, dict) and payload.get("holdSeconds") is not None:
+            holdDuration = float(payload["holdSeconds"])
+        return self.showAlert(
+            "BEM-VINDO CHEFE",
+            "SISTEMA PRONTO",
+            holdSeconds=holdDuration,
+        )
 
     def _onCommandReceived(self, payload: Any) -> None:
         if isinstance(payload, dict):

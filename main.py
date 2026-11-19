@@ -1,16 +1,25 @@
 import signal
+import sys
+import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from aiCore.eventBus import EventBus, eventBus
 from aiCore.jarvisBrain import JarvisBrain
 from aiCore.memoryStore import memoryStore
 from aiCore.skillRegistry import registerSkill, skillRegistry
+from appConfig.loggingConfig import getLogger, setupLogging
 from appConfig.settings import Settings, settings
-from arduinoHub.lcdDisplay import LcdDisplay, lcdDisplay
-from arduinoHub.sensorReader import SensorReader, sensorReader
-from arduinoHub.serialConnection import SerialConnection, serialConnection
+from arduinoHub import (
+    ArduinoConnection,
+    LcdDisplay,
+    NetworkConnection,
+    SensorReader,
+    SerialConnection,
+    lcdDisplay,
+    sensorReader,
+)
 from pcHardware.pcStatusFacade import PcStatusFacade, pcStatusFacade
 
 
@@ -21,10 +30,28 @@ class JarvisContainer:
     appSettings: Settings
     bus: EventBus
     hardwareFacade: PcStatusFacade
-    serialConn: SerialConnection
+    serialConn: ArduinoConnection
     display: LcdDisplay
     sensors: SensorReader
     brain: JarvisBrain
+
+    @property
+    def arduinoConn(self) -> ArduinoConnection:
+        """Retorna o provedor de conexão ativo do Arduino (Wi-Fi ou Serial)."""
+        return self.serialConn
+
+
+_consoleLock: threading.Lock = threading.Lock()
+
+
+def printAssistantNotice(message: str, currentInputBuffer: str = "") -> None:
+    """Exibe falas assíncronas do JARVIS limpando a linha atual e redesenhando o prompt 'Você: '."""
+    cleanMessage: str = message.strip()
+    if not cleanMessage:
+        return
+    with _consoleLock:
+        sys.stdout.write(f"\r\033[K\nJARVIS: {cleanMessage}\nVocê: {currentInputBuffer}")
+        sys.stdout.flush()
 
 
 @registerSkill
@@ -43,50 +70,69 @@ def onGpuHighTempAlert(payload: Any) -> None:
     if isinstance(payload, dict):
         gpuTemp: Any = payload.get("gpuTemp")
         gpuName: Any = payload.get("gpuName", "RTX 4060 Ti")
-        print(f"\n[ALERTA][EventBus] Temperatura elevada na {gpuName}: {gpuTemp}°C!")
+        printAssistantNotice(
+            f"Alerta térmico: temperatura elevada na {gpuName} ({gpuTemp}°C)."
+        )
 
 
 def onCpuHighTempAlert(payload: Any) -> None:
     """Callback do EventBus para alerta de temperatura elevada da CPU."""
     if isinstance(payload, dict):
         cpuTemp: Any = payload.get("cpuTemp")
-        print(f"\n[ALERTA][EventBus] Temperatura elevada no Ryzen 5 5600: {cpuTemp}°C!")
+        printAssistantNotice(
+            f"Alerta térmico: temperatura elevada no processador Ryzen 5 5600 ({cpuTemp}°C)."
+        )
 
 
 def onGamingModeChanged(payload: Any) -> None:
     """Callback do EventBus para mudança de estado do Modo Jogo (>85% de uso da GPU)."""
     if isinstance(payload, dict):
-        isGaming: bool = bool(payload.get("isGamingMode", False))
-        gpuUsage: Any = payload.get("gpuUsage", 0.0)
-        if isGaming:
-            print(
-                f"\n[MODO JOGO][EventBus] Ativado (GPU em {gpuUsage}%). "
-                "Tarefas pesadas de segundo plano foram pausadas."
+        active: bool = bool(
+            payload.get("active", payload.get("isGamingMode", False))
+        )
+        if active:
+            printAssistantNotice(
+                "Modo Jogo ativado. Suspendendo tarefas de fundo para priorizar a performance gráfica."
             )
         else:
-            print(
-                f"\n[MODO JOGO][EventBus] Desativado (GPU em {gpuUsage}%). "
-                "Tarefas de segundo plano liberadas."
+            printAssistantNotice(
+                "Modo Jogo desativado. Retomando processamento padrão do assistente."
             )
+
+
+def onUserPresenceDetected(_payload: Any = None) -> None:
+    """Callback do EventBus para saudação formal no console quando o sensor PIR detecta presença."""
+    printAssistantNotice(
+        "Bem-vindo de volta, senhor. Todos os sistemas operacionais e prontos."
+    )
 
 
 def onArduinoConnectionChanged(payload: Any) -> None:
-    """Callback do EventBus para mudanças no estado da conexão serial com o Arduino."""
+    """Callback do EventBus para mudanças no estado da conexão (registrado em jarvis.log)."""
     if isinstance(payload, dict):
-        comPort: str = str(payload.get("comPort", settings.comPort))
+        hwLogger = getLogger("jarvis.hardware")
+        endpoint: str = str(
+            payload.get("endpoint")
+            or payload.get("comPort")
+            or f"{settings.arduinoHost}:{settings.arduinoPort}"
+        )
         isConnected: bool = bool(payload.get("isConnected", False))
         if isConnected:
-            print(f"\n[ARDUINO][EventBus] Conexão restabelecida em {comPort}.")
+            hwLogger.info("Conexão restabelecida em %s.", endpoint)
         else:
-            print(f"\n[ARDUINO][EventBus] Conexão perdida em {comPort}. Fallback para modo Mock ativo.")
+            hwLogger.warning(
+                "Conexão perdida em %s. Fallback para Modo Simulação (Mock) ativo.",
+                endpoint,
+            )
 
 
 def onArduinoButtonPressed(payload: Any) -> None:
-    """Callback do EventBus para eventos de botão físico recebidos do Arduino UNO."""
+    """Callback do EventBus para eventos de botão físico (registrado em jarvis.log)."""
     if isinstance(payload, dict):
+        hwLogger = getLogger("jarvis.hardware")
         buttonId: Any = payload.get("button")
         state: Any = payload.get("state", "PRESSED")
-        print(f"\n[ARDUINO][EventBus] Botão {buttonId} acionado ({state}).")
+        hwLogger.info("Botão %s acionado (%s).", buttonId, state)
 
 
 def setupEventListeners(bus: EventBus = eventBus) -> None:
@@ -94,25 +140,76 @@ def setupEventListeners(bus: EventBus = eventBus) -> None:
     bus.subscribe("gpuHighTempAlert", onGpuHighTempAlert)
     bus.subscribe("cpuHighTempAlert", onCpuHighTempAlert)
     bus.subscribe("gamingModeChanged", onGamingModeChanged)
+    bus.subscribe("userPresenceDetected", onUserPresenceDetected)
     bus.subscribe("arduinoConnectionChanged", onArduinoConnectionChanged)
     bus.subscribe("arduinoButtonPressed", onArduinoButtonPressed)
 
 
-def initializeRuntime(startBackgroundWorkers: bool = True) -> JarvisContainer:
+def teardownEventListeners(bus: EventBus = eventBus) -> None:
+    """Remove os ouvintes de console do EventBus durante o encerramento."""
+    bus.unsubscribe("gpuHighTempAlert", onGpuHighTempAlert)
+    bus.unsubscribe("cpuHighTempAlert", onCpuHighTempAlert)
+    bus.unsubscribe("gamingModeChanged", onGamingModeChanged)
+    bus.unsubscribe("userPresenceDetected", onUserPresenceDetected)
+    bus.unsubscribe("arduinoConnectionChanged", onArduinoConnectionChanged)
+    bus.unsubscribe("arduinoButtonPressed", onArduinoButtonPressed)
+
+
+def formatArduinoStatus(connStatus: dict[str, Any]) -> str:
+    """Formata o estado atual da conexão do Arduino (Wi-Fi, Serial ou Modo Simulação Mock)."""
+    connType: str = str(connStatus.get("connectionType", settings.arduinoConnectionType)).lower()
+    if connType == "wifi":
+        host: str = str(connStatus.get("host", settings.arduinoHost))
+        port: Any = connStatus.get("port", settings.arduinoPort)
+        targetDesc: str = f"Wi-Fi ({host}:{port})"
+    else:
+        comPort: str = str(connStatus.get("comPort", settings.comPort))
+        targetDesc = f"Serial ({comPort})"
+
+    if connStatus.get("isOpen"):
+        return f"Conectado via {targetDesc}"
+    return f"Modo Simulação (Mock) [{targetDesc}]"
+
+
+def initializeRuntime(
+    startBackgroundWorkers: bool = True,
+    connectionType: Optional[str] = None,
+) -> JarvisContainer:
     """Inicializa e registra todos os subsistemas no contêiner central da aplicação."""
+    setupLogging()
     setupEventListeners(eventBus)
 
-    # Garante inicialização resiliente da porta serial (fallback automático para Mock se falhar)
-    try:
-        serialConnection.connect()
-    except Exception as error:
-        print(f"[AVISO][Main] Falha ao iniciar SerialConnection ({error}). Seguindo em modo Mock.")
-        serialConnection.isMockMode = True
+    selectedType: str = (
+        connectionType or settings.arduinoConnectionType or "wifi"
+    ).strip().lower()
 
-    # Garante que o display esteja inscrito no EventBus e vinculado ao PcStatusFacade
+    if selectedType == "wifi":
+        arduinoConn: ArduinoConnection = NetworkConnection(
+            host=settings.arduinoHost,
+            port=settings.arduinoPort,
+            timeout=settings.arduinoSocketTimeout,
+        )
+    else:
+        arduinoConn = SerialConnection(
+            port=settings.comPort,
+            baudRate=settings.baudRate,
+            timeout=settings.serialTimeout,
+        )
+
+    # Garante inicialização resiliente (fallback automático para Mock se falhar)
+    try:
+        arduinoConn.connect()
+    except Exception as error:
+        print(f"[AVISO][Main] Falha ao iniciar conexão Arduino ({error}). Seguindo em modo Mock.")
+        arduinoConn.isMockMode = True
+
+    # Injeta o provedor de conexão (Wi-Fi ou Serial) no LcdDisplay e no SensorReader
+    lcdDisplay.connection = arduinoConn
     lcdDisplay.telemetryFacade = pcStatusFacade
     lcdDisplay.snapshotProvider = pcStatusFacade.getSnapshot
     lcdDisplay.subscribeToEvents()
+
+    sensorReader.connection = arduinoConn
 
     brain: JarvisBrain = JarvisBrain(
         appSettings=settings,
@@ -125,7 +222,7 @@ def initializeRuntime(startBackgroundWorkers: bool = True) -> JarvisContainer:
         appSettings=settings,
         bus=eventBus,
         hardwareFacade=pcStatusFacade,
-        serialConn=serialConnection,
+        serialConn=arduinoConn,
         display=lcdDisplay,
         sensors=sensorReader,
         brain=brain,
@@ -143,7 +240,7 @@ def initializeRuntime(startBackgroundWorkers: bool = True) -> JarvisContainer:
 
 
 def shutdownRuntime(container: JarvisContainer, goodbyeDelaySeconds: float = 0.3) -> None:
-    """Encerra workers, envia mensagem de despedida ao LCD e fecha a porta serial com segurança."""
+    """Encerra workers, envia mensagem de despedida ao LCD e fecha a conexão com segurança."""
     print("[INFO] Encerrando subsistemas e display LCD...")
     try:
         container.sensors.stop()
@@ -152,8 +249,7 @@ def shutdownRuntime(container: JarvisContainer, goodbyeDelaySeconds: float = 0.3
 
     try:
         container.display.showShutdown(detail="ATE LOGO!")
-        if container.serialConn.isOpen() and goodbyeDelaySeconds > 0:
-            # Aguarda transmissão do pacote final antes de fechar o descritor serial
+        if container.arduinoConn.isOpen() and goodbyeDelaySeconds > 0:
             time.sleep(goodbyeDelaySeconds)
     except Exception as error:
         print(f"[AVISO][Main] Erro ao enviar mensagem de encerramento ao LCD: {error}")
@@ -164,9 +260,9 @@ def shutdownRuntime(container: JarvisContainer, goodbyeDelaySeconds: float = 0.3
         print(f"[AVISO][Main] Erro ao encerrar LcdDisplay: {error}")
 
     try:
-        container.serialConn.disconnect()
+        container.arduinoConn.disconnect()
     except Exception as error:
-        print(f"[AVISO][Main] Erro ao fechar SerialConnection: {error}")
+        print(f"[AVISO][Main] Erro ao fechar conexão do Arduino: {error}")
 
     try:
         container.hardwareFacade.shutdown()
@@ -174,6 +270,7 @@ def shutdownRuntime(container: JarvisContainer, goodbyeDelaySeconds: float = 0.3
         pass
 
     try:
+        teardownEventListeners(container.bus)
         container.bus.shutdown()
     except Exception:
         pass
@@ -181,12 +278,8 @@ def shutdownRuntime(container: JarvisContainer, goodbyeDelaySeconds: float = 0.3
 
 def printBootHeader(container: JarvisContainer) -> None:
     """Exibe o cabeçalho de inicialização e o diagnóstico de hardware, IA e ArduinoHub."""
-    serialStatus: dict[str, Any] = container.serialConn.getStatus()
-    arduinoModeText: str = (
-        f"Conectado em {serialStatus['comPort']} @ {serialStatus['baudRate']} baud"
-        if serialStatus.get("isOpen")
-        else f"Modo Simulação/Mock ({serialStatus['comPort']} @ {serialStatus['baudRate']} baud)"
-    )
+    connStatus: dict[str, Any] = container.arduinoConn.getStatus()
+    arduinoModeText: str = formatArduinoStatus(connStatus)
 
     print("=" * 75)
     print(" JARVIS - Assistente Pessoal Local de IA (Modo Console + ArduinoHub)")
@@ -208,7 +301,7 @@ def printBootHeader(container: JarvisContainer) -> None:
     print("Comandos rápidos do console:")
     print("  /status  -> Exibe telemetria instantânea de CPU, RAM, GPU e Arduino")
     print("  /limpar  -> Limpa o histórico de conversa da memória")
-    print("  /sair    -> Encerra o assistente com limpeza da porta serial")
+    print("  /sair    -> Encerra o assistente com limpeza da conexão Arduino")
     print("=" * 75)
 
 
@@ -247,12 +340,11 @@ def runConsoleLoop() -> None:
 
             if lowerInput in ("/status", "/hw"):
                 currentSnapshot: dict[str, Any] = container.hardwareFacade.getSnapshot()
-                serialStatus: dict[str, Any] = container.serialConn.getStatus()
+                connStatus: dict[str, Any] = container.arduinoConn.getStatus()
                 print(f"\n[TELEMETRIA] {container.hardwareFacade.formatSummary(currentSnapshot)}")
                 print(
-                    f"[ARDUINO] Conectado={serialStatus['isOpen']} | "
-                    f"Mock={serialStatus['isMockMode']} | "
-                    f"Porta={serialStatus['comPort']} ({serialStatus['baudRate']} baud)"
+                    f"[ARDUINO] {formatArduinoStatus(connStatus)} | "
+                    f"Conectado={connStatus['isOpen']} | Mock={connStatus['isMockMode']}"
                 )
                 continue
 

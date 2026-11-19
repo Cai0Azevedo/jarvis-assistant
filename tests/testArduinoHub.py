@@ -1,4 +1,7 @@
 import argparse
+import contextlib
+import io
+import socket
 import sys
 import threading
 import time
@@ -16,10 +19,12 @@ import main as jarvisMain
 from aiCore.eventBus import EventBus
 from arduinoHub import (
     LcdDisplay,
+    NetworkConnection,
     SensorReader,
     SerialConnection,
     SerialProtocol,
     formatLcdMessage,
+    getConnectionProvider,
     lcdDisplay,
     parseIncoming,
     sensorReader,
@@ -30,7 +35,7 @@ from pcHardware.pcStatusFacade import pcStatusFacade
 
 
 class TestArduinoHub(unittest.TestCase):
-    """Testes unitários e de integração do subsistema arduinoHub e ciclo de vida no main.py."""
+    """Testes unitários e de integração do subsistema arduinoHub (Serial e Wi-Fi TCP) e main.py."""
 
     def setUp(self) -> None:
         self.bus: EventBus = EventBus()
@@ -96,6 +101,11 @@ class TestArduinoHub(unittest.TestCase):
         senFloat: dict[str, Any] = parseIncoming("<SEN:TEMP_AMB:24.5>\n")
         self.assertEqual(senFloat["value"], 24.5)
 
+        ev: dict[str, Any] = parseIncoming("<EVENT:MOTION_DETECTED>\n")
+        self.assertEqual(ev["type"], "EVENT")
+        self.assertEqual(ev["name"], "MOTION_DETECTED")
+        self.assertIs(ev["value"], True)
+
         cmd: dict[str, Any] = parseIncoming("<CMD:RELAY1:ON>\n")
         self.assertEqual(cmd["type"], "CMD")
         self.assertEqual(cmd["action"], "RELAY1")
@@ -138,6 +148,116 @@ class TestArduinoHub(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(len(self.conn.getMockTxHistory()), 20)
 
+    def testNetworkConnectionConnectSuccessAndRead(self) -> None:
+        with patch("socket.socket") as mockSocketCls:
+            mockSockInstance: MagicMock = MagicMock()
+            mockSockInstance.recv.return_value = b"<SEN:TEMP:25>\n"
+            mockSocketCls.return_value = mockSockInstance
+
+            netConn: NetworkConnection = NetworkConnection(
+                host="192.168.7.5",
+                port=8080,
+                timeout=3.0,
+                bus=self.bus,
+            )
+            connected: bool = netConn.connect()
+
+            self.assertTrue(connected)
+            self.assertTrue(netConn.isConnected)
+            self.assertFalse(netConn.isMockMode)
+            self.assertTrue(netConn.isOpen())
+            mockSockInstance.settimeout.assert_called_once_with(3.0)
+            mockSockInstance.connect.assert_called_once_with(("192.168.7.5", 8080))
+
+            receivedText: Any = netConn.read()
+            self.assertEqual(receivedText, "<SEN:TEMP:25>")
+
+            netConn.disconnect()
+            self.assertFalse(netConn.isConnected)
+            self.assertFalse(netConn.isOpen())
+            mockSockInstance.close.assert_called_once()
+
+    def testNetworkConnectionFallbackToMockOnRefusedOrTimeout(self) -> None:
+        # 1. ConnectionRefusedError
+        with patch("socket.socket") as mockSocketCls:
+            mockSockInstance: MagicMock = MagicMock()
+            mockSockInstance.connect.side_effect = ConnectionRefusedError("Conexão recusada pelo ESP-01")
+            mockSocketCls.return_value = mockSockInstance
+
+            netConn: NetworkConnection = NetworkConnection(
+                host="192.168.7.5",
+                port=8080,
+                timeout=3.0,
+                bus=self.bus,
+            )
+            self.assertFalse(netConn.connect())
+            self.assertTrue(netConn.isMockMode)
+            self.assertFalse(netConn.isConnected)
+            self.assertFalse(netConn.isOpen())
+
+        # 2. socket.timeout
+        with patch("socket.socket") as mockSocketCls:
+            mockSockTimeout: MagicMock = MagicMock()
+            mockSockTimeout.connect.side_effect = socket.timeout("Timeout de 3.0s atingido")
+            mockSocketCls.return_value = mockSockTimeout
+
+            netConnTimeout: NetworkConnection = NetworkConnection(
+                host="192.168.7.5",
+                port=8080,
+                timeout=3.0,
+                bus=self.bus,
+            )
+            self.assertFalse(netConnTimeout.connect())
+            self.assertTrue(netConnTimeout.isMockMode)
+            self.assertFalse(netConnTimeout.isConnected)
+
+    def testNetworkConnectionSendLcdFormattingThreadSafetyAndDisconnectFallback(self) -> None:
+        with patch("socket.socket") as mockSocketCls:
+            mockSockInstance: MagicMock = MagicMock()
+            mockSocketCls.return_value = mockSockInstance
+
+            netConn: NetworkConnection = NetworkConnection(
+                host="192.168.7.5",
+                port=8080,
+                timeout=3.0,
+                bus=self.bus,
+            )
+            self.assertTrue(netConn.connect())
+
+            packet: str = formatLcdMessage("CPU: 45% 58C", "GPU: 62% 65C")
+            self.assertTrue(netConn.send(packet))
+            mockSockInstance.sendall.assert_called_once_with(
+                b"<LCD:CPU: 45% 58C    |GPU: 62% 65C    >\n"
+            )
+
+            # Teste de concorrência thread-safe (múltiplas threads chamando send simultaneamente)
+            errors: list[Exception] = []
+
+            def wifiWorker(workerId: int) -> None:
+                try:
+                    for step in range(5):
+                        netConn.send(formatLcdMessage(f"WIFI {workerId}", f"PKT {step}"))
+                except Exception as err:
+                    errors.append(err)
+
+            threads: list[threading.Thread] = [
+                threading.Thread(target=wifiWorker, args=(idx,)) for idx in range(4)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            self.assertEqual(errors, [])
+            self.assertEqual(mockSockInstance.sendall.call_count, 21)
+
+            # Simula queda abrupta da conexão Wi-Fi durante sendall -> deve cair para Mock sem exceção
+            mockSockInstance.sendall.side_effect = ConnectionResetError("ESP-01 reiniciou")
+            self.assertTrue(netConn.send(packet))
+            self.assertTrue(netConn.isMockMode)
+            self.assertFalse(netConn.isConnected)
+            self.assertEqual(len(netConn.getMockTxHistory()), 1)
+
     def testLcdDisplayStatusErrorAndAlternatingTelemetry(self) -> None:
         self.assertTrue(self.display.showOnline(holdSeconds=0.0))
         l1, l2 = self.display.getLastDisplayedLines()
@@ -177,7 +297,6 @@ class TestArduinoHub(unittest.TestCase):
         self.assertTrue(any("HORA:" in pkt for pkt in txHistory))
 
     def testLcdDisplayObserverHoldAndResumeTelemetry(self) -> None:
-        # Evento de comando de voz/texto retém exibição temporariamente e depois retoma telemetria
         self.bus.publish(
             "voiceCommandReceived",
             {"text": "Qual temp CPU?", "holdSeconds": 0.12},
@@ -204,12 +323,16 @@ class TestArduinoHub(unittest.TestCase):
     def testSensorReaderParsesAndPublishesEvents(self) -> None:
         capturedSensors: list[dict[str, Any]] = []
         capturedButtons: list[dict[str, Any]] = []
+        capturedEvents: list[dict[str, Any]] = []
 
         self.bus.subscribe("arduinoSensorUpdated", lambda p: capturedSensors.append(p))
         self.bus.subscribe("arduinoButtonPressed", lambda p: capturedButtons.append(p))
+        self.bus.subscribe("arduinoEventReceived", lambda p: capturedEvents.append(p))
 
         self.reader.injectMockSensor("TEMP", 25)
         self.conn.enqueueMockInput("<BTN:1>\n")
+        self.reader.pollOnce()
+        self.conn.enqueueMockInput("<EVENT:WAKE_TRIGGER>\n")
         self.reader.pollOnce()
         time.sleep(0.08)
 
@@ -221,50 +344,167 @@ class TestArduinoHub(unittest.TestCase):
         self.assertEqual(len(capturedButtons), 1)
         self.assertEqual(capturedButtons[0]["button"], 1)
 
+        self.assertEqual(len(capturedEvents), 1)
+        self.assertEqual(capturedEvents[0]["name"], "WAKE_TRIGGER")
+
         self.assertTrue(self.reader.sendCommand("RELAY1", "ON"))
         self.assertIn("<CMD:RELAY1:ON>", self.conn.getMockTxHistory())
 
-    def testMainLifecycleInitializeAndGracefulShutdown(self) -> None:
-        # Valida boot com fallback gracioso em caso de SerialException e envio de despedida no teardown
+    def testPirPresenceDetectionInSensorReader(self) -> None:
+        presenceEvents: list[dict[str, Any]] = []
+        self.bus.subscribe("userPresenceDetected", lambda p: presenceEvents.append(p))
+
+        # Configura timeout curto de ausência (0.2s) para validar ciclo completo da máquina de estados
+        self.reader.presenceTimeoutSeconds = 0.20
+        self.reader.resetPresenceState()
+        self.assertFalse(self.reader.isUserPresent)
+
+        # 1) Primeira detecção (usuário acabou de chegar) + verificação de stdout limpo (sem print)
+        stdoutBuffer = io.StringIO()
+        with contextlib.redirect_stdout(stdoutBuffer):
+            self.conn.enqueueMockInput("<EVENT:PRESENCE_DETECTED>\n")
+            packet: Any = self.reader.pollOnce()
+        time.sleep(0.06)
+
+        self.assertEqual(stdoutBuffer.getvalue(), "")
+        self.assertIsNotNone(packet)
+        self.assertEqual(packet["type"], "EVENT")
+        self.assertEqual(packet["name"], "PRESENCE_DETECTED")
+        self.assertTrue(self.reader.isUserPresent)
+        firstTimestamp: float = self.reader.lastMovementTimestamp
+        self.assertGreater(firstTimestamp, 0.0)
+        self.assertEqual(len(presenceEvents), 1)
+        self.assertEqual(presenceEvents[0]["source"], "pir_sensor")
+
+        # 2) Movimento contínuo com usuário já sentado (isUserPresent == True):
+        #    apenas atualiza lastMovementTimestamp, SEM republicar userPresenceDetected
+        time.sleep(0.05)
+        self.conn.enqueueMockInput("<EVENT:PRESENCE_DETECTED>\n")
+        self.reader.pollOnce()
+        time.sleep(0.05)
+
+        self.assertTrue(self.reader.isUserPresent)
+        self.assertGreater(self.reader.lastMovementTimestamp, firstTimestamp)
+        self.assertEqual(len(presenceEvents), 1)
+
+        # 3) Simula ausência superior a presenceTimeoutSeconds -> reseta isUserPresent = False
+        time.sleep(0.25)
+        expired: bool = self.reader.checkPresenceTimeout()
+        self.assertTrue(expired)
+        self.assertFalse(self.reader.isUserPresent)
+
+        # 4) Novo retorno do usuário após ausência -> dispara boas-vindas novamente
+        self.conn.enqueueMockInput("<EVENT:PRESENCE_DETECTED>\n")
+        self.reader.pollOnce()
+        time.sleep(0.06)
+        self.assertTrue(self.reader.isUserPresent)
+        self.assertEqual(len(presenceEvents), 2)
+
+    def testLcdDisplayHandleUserPresenceFreezesAndResumesCarousel(self) -> None:
+        self.conn.clearMockTxHistory()
+        # Publica userPresenceDetected com hold curto para validar congelamento e retomada
+        self.bus.publish(
+            "userPresenceDetected",
+            {"source": "pir_sensor", "timestamp": time.time(), "holdSeconds": 0.15},
+            asyncDispatch=False,
+        )
+
+        l1, l2 = self.display.getLastDisplayedLines()
+        self.assertEqual(l1, "BEM-VINDO CHEFE ")
+        self.assertEqual(l2, "SISTEMA PRONTO  ")
+        self.assertIn(
+            "<LCD:BEM-VINDO CHEFE |SISTEMA PRONTO  >",
+            self.conn.getMockTxHistory(),
+        )
+
+        # Durante a janela de saudação, o carrossel de telemetria permanece congelado
+        self.assertFalse(self.display.showTelemetry(screenIndex=0))
+        self.assertEqual(
+            self.display.getLastDisplayedLines(),
+            ("BEM-VINDO CHEFE ", "SISTEMA PRONTO  "),
+        )
+
+        # Após o término da saudação, o carrossel de CPU/GPU é retomado automaticamente
+        time.sleep(0.18)
+        self.assertTrue(self.display.showTelemetry(screenIndex=0))
+        l1After, l2After = self.display.getLastDisplayedLines()
+        self.assertEqual(l1After, "CPU: 45% 58C    ")
+        self.assertEqual(l2After, "GPU: 62% 65C    ")
+
+    def testMainLifecycleInitializeWifiAndSerialFallback(self) -> None:
+        # 1. Valida Factory getConnectionProvider e formatação de status
+        wifiProvider = getConnectionProvider("wifi")
+        serialProvider = getConnectionProvider("serial")
+        self.assertIsInstance(wifiProvider, NetworkConnection)
+        self.assertIsInstance(serialProvider, SerialConnection)
+
+        self.assertIn(
+            "Wi-Fi (192.168.7.5:8080)",
+            jarvisMain.formatArduinoStatus(
+                {"connectionType": "wifi", "host": "192.168.7.5", "port": 8080, "isOpen": True}
+            ),
+        )
+        self.assertIn(
+            "Serial (COM3)",
+            jarvisMain.formatArduinoStatus(
+                {"connectionType": "serial", "comPort": "COM3", "isOpen": True}
+            ),
+        )
+        self.assertIn(
+            "Modo Simulação (Mock)",
+            jarvisMain.formatArduinoStatus(
+                {"connectionType": "wifi", "host": "192.168.7.5", "port": 8080, "isOpen": False}
+            ),
+        )
+
+        # 2. Valida boot do main.py em modo Wi-Fi com fallback gracioso para Mock e teardown
         with (
-            patch("arduinoHub.serialConnection.serial") as mockSerialModule,
+            patch("socket.socket") as mockSocketCls,
             patch.object(pcStatusFacade, "getSnapshot", return_value=self.mockSnapshot),
             patch.object(pcStatusFacade, "shutdown"),
             patch.object(self.bus, "shutdown"),
         ):
-            mockSerialModule.Serial.side_effect = SerialException("Porta COM3 desconectada")
+            mockSockInstance: MagicMock = MagicMock()
+            mockSockInstance.connect.side_effect = ConnectionRefusedError("ESP-01 desligado")
+            mockSocketCls.return_value = mockSockInstance
+
             container: jarvisMain.JarvisContainer = jarvisMain.initializeRuntime(
-                startBackgroundWorkers=True
+                startBackgroundWorkers=True,
+                connectionType="wifi",
             )
             try:
-                self.assertIs(container.serialConn, serialConnection)
-                self.assertIs(container.hardwareFacade, pcStatusFacade)
-                self.assertIs(container.display, lcdDisplay)
-                self.assertTrue(container.serialConn.is_mock)
+                self.assertIsInstance(container.arduinoConn, NetworkConnection)
+                self.assertIs(container.display.connection, container.arduinoConn)
+                self.assertIs(container.sensors.connection, container.arduinoConn)
+                self.assertTrue(container.arduinoConn.isMockMode)
 
                 time.sleep(0.08)
-                txBeforeShutdown: list[str] = container.serialConn.getMockTxHistory()
+                txBeforeShutdown: list[str] = container.arduinoConn.getMockTxHistory()
                 self.assertTrue(
                     any("JARVIS ONLINE" in pkt for pkt in txBeforeShutdown)
                 )
             finally:
                 jarvisMain.shutdownRuntime(container, goodbyeDelaySeconds=0.0)
 
-            txAfterShutdown: list[str] = container.serialConn.getMockTxHistory()
+            txAfterShutdown: list[str] = container.arduinoConn.getMockTxHistory()
             self.assertIn("<LCD:JARVIS OFFLINE  |ATE LOGO!       >", txAfterShutdown)
-            self.assertFalse(container.serialConn.isOpen())
+            self.assertFalse(container.arduinoConn.isOpen())
 
 
 def runMockDemo(cycles: int = 4, intervalSeconds: float = 3.5) -> None:
-    """Demonstra o subsistema arduinoHub com telemetria real em modo simulado (sem USB)."""
+    """Demonstra o subsistema arduinoHub com telemetria real em modo simulado."""
     print("=" * 70)
     print(" JARVIS - Demonstração arduinoHub (Modo Simulação / Mock)")
     print("=" * 70)
-    print(f"Estado da conexão: {serialConnection.getStatus()}")
+    conn = getConnectionProvider()
+    conn.connect()
+    print(f"Estado da conexão: {conn.getStatus()}")
 
     bus: EventBus = EventBus()
     display: LcdDisplay = lcdDisplay
     reader: SensorReader = sensorReader
+    display.connection = conn
+    reader.connection = conn
     display.subscribeToEvents()
 
     bus.subscribe(
@@ -274,6 +514,10 @@ def runMockDemo(cycles: int = 4, intervalSeconds: float = 3.5) -> None:
     bus.subscribe(
         "arduinoButtonPressed",
         lambda payload: print(f"[EVENTBUS] Botão acionado: {payload}"),
+    )
+    bus.subscribe(
+        "arduinoEventReceived",
+        lambda payload: print(f"[EVENTBUS] Evento recebido: {payload}"),
     )
 
     try:
@@ -295,16 +539,16 @@ def runMockDemo(cycles: int = 4, intervalSeconds: float = 3.5) -> None:
         bus.publish("gpuHighTempAlert", {"gpuTemp": 83.0}, asyncDispatch=False)
         time.sleep(1.0)
 
-        print("\n4) Simulando entrada de sensor/botão do Arduino e envio de <CMD:...>...")
+        print("\n4) Simulando entrada de sensor/evento do Arduino e envio de <CMD:...>...")
         reader.injectMockSensor("TEMP_AMB", 24.5)
-        serialConnection.enqueueMockInput("<BTN:1>\n")
+        conn.enqueueMockInput("<EVENT:PING>\n")
         reader.pollOnce()
         reader.sendCommand("RELAY1", "ON")
         time.sleep(0.2)
     finally:
         display.shutdown(sendGoodbye=True)
         reader.stop()
-        serialConnection.disconnect()
+        conn.disconnect()
         pcStatusFacade.shutdown()
         bus.shutdown()
         print("\n[INFO] Demonstração finalizada com segurança.")

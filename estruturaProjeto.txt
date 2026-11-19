@@ -32,15 +32,17 @@ C:\Jarvis\jarvis-assistant\
 │   ├── skillRegistry.py              [OK]     Decorador @registerSkill e registro de ferramentas
 │   └── __pycache__\                  [IGN]    Bytecode compilado Python
 │
-├── appConfig\                        [OK]     Configurações globais e carregamento de .env
-│   ├── __init__.py                   [OK]     Exportação do singleton settings
-│   ├── settings.py                   [OK]     Singleton Settings (Ollama, Hardware, Arduino, IMAP)
+├── appConfig\                        [OK]     Configurações globais, logging e carregamento de .env
+│   ├── __init__.py                   [OK]     Exportação de settings, getLogger e setupLogging
+│   ├── loggingConfig.py              [OK]     Configuração de logs em jarvis.log com blindagem do console
+│   ├── settings.py                   [OK]     Singleton Settings (Ollama, Hardware, Arduino, PIR, IMAP)
 │   └── __pycache__\                  [IGN]    Bytecode compilado Python
 │
-├── arduinoHub\                       [OK]     Subsistema físico Arduino UNO + LCD 1602A (USB Serial)
-│   ├── __init__.py                   [OK]     Exportações públicas do arduinoHub
+├── arduinoHub\                       [OK]     Subsistema físico Arduino UNO + ESP-01 + LCD 1602A
+│   ├── __init__.py                   [OK]     Exportações públicas e Factory getConnectionProvider()
 │   ├── lcdDisplay.py                 [OK]     Observer do EventBus e worker de telas alternadas (16x2)
-│   ├── sensorReader.py               [OK]     Leitor daemon de pacotes <SEN:...> / <BTN:...> e <CMD:...>
+│   ├── networkConnection.py          [OK]     Cliente TCP Socket thread-safe (Wi-Fi ESP-01) com Mock
+│   ├── sensorReader.py               [OK]     Leitor daemon de pacotes <SEN:...>, <EVENT:...>, <BTN:...>
 │   ├── serialConnection.py           [OK]     Singleton thread-safe pyserial com fallback para Mock
 │   ├── serialProtocol.py             [OK]     Formatador <LCD:L1|L2> (16 chars) e parser de pacotes
 │   └── __pycache__\                  [IGN]    Bytecode compilado Python
@@ -66,6 +68,7 @@ C:\Jarvis\jarvis-assistant\
 │
 ├── tests\                            [TEST]   Testes automatizados
 │   ├── testArduinoHub.py             [TEST]   Testes unitários + demo mock do arduinoHub e main.py
+│   ├── testPcHardware.py             [TEST]   Testes de histerese/cooldown do Modo Jogo e console
 │   └── __pycache__\                  [IGN]    Bytecode compilado Python
 │
 ├── voiceEngine\                      [STUB]   Fase 5 — Motor de voz neural (não implementada)
@@ -186,6 +189,9 @@ serial USB (Arduino), barramento EventBus e consultas planejadas de IMAP.
       * "arduinoConnectionChanged"-> Publicado: arduinoHub\serialConnection.py
                                      Assinado:  main.py
       * "arduinoSensorUpdated"    -> Publicado: arduinoHub\sensorReader.py
+      * "arduinoEventReceived"    -> Publicado: arduinoHub\sensorReader.py
+      * "userPresenceDetected"    -> Publicado: arduinoHub\sensorReader.py (<EVENT:PRESENCE_DETECTED>)
+                                     Assinado:  arduinoHub\lcdDisplay.py (handleUserPresence)
       * "arduinoButtonPressed"    -> Publicado: arduinoHub\sensorReader.py
                                      Assinado:  main.py
       * "telemetryUpdated", "urgentEmailReceived", "voiceCommandReceived",

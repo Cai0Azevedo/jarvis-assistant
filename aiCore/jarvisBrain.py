@@ -33,7 +33,9 @@ class JarvisBrain:
     def _onGamingModeChanged(self, payload: Any) -> None:
         """Atualiza o estado interno de Modo Jogo quando o uso da RTX 4060 Ti ultrapassa 85%."""
         if isinstance(payload, dict):
-            self.isGamingMode = bool(payload.get("isGamingMode", False))
+            self.isGamingMode = bool(
+                payload.get("active", payload.get("isGamingMode", False))
+            )
 
     def canRunBackgroundTask(self, currentGpuUsage: Optional[float] = None) -> bool:
         """Verifica se tarefas pesadas de segundo plano podem rodar sem afetar o Modo Jogo (>85% GPU)."""

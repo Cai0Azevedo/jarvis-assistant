@@ -10,6 +10,7 @@ class SerialProtocol:
     - PC -> Arduino (LCD 16x2): ``<LCD:Linha1(16)|Linha2(16)>\\n``
     - PC -> Arduino (Comando): ``<CMD:ACAO:VALOR>\\n``
     - Arduino -> PC (Sensor): ``<SEN:NOME:VALOR>\\n``
+    - Arduino -> PC (Evento): ``<EVENT:NOME>\\n`` ou ``<EVENT:NOME:VALOR>\\n``
     - Arduino -> PC (Botão): ``<BTN:ID>\\n`` ou ``<BTN:ID:ESTADO>\\n``
     """
 
@@ -82,6 +83,17 @@ class SerialProtocol:
         return f"<SEN:{safeName}:{safeValue}>\n"
 
     @classmethod
+    def encodeEvent(cls, eventName: str, value: Optional[Any] = None) -> str:
+        """Empacota um evento no formato ``<EVENT:NOME>\\n`` ou ``<EVENT:NOME:VALOR>\\n``."""
+        safeName: str = (
+            cls.sanitizeText(eventName).replace(":", "_").replace(" ", "_").upper()
+        )
+        if value is None:
+            return f"<EVENT:{safeName}>\n"
+        safeValue: str = cls.sanitizeText(str(value)).replace(":", "_")
+        return f"<EVENT:{safeName}:{safeValue}>\n"
+
+    @classmethod
     def parseIncoming(cls, rawMessage: str) -> dict[str, Any]:
         """Interpreta mensagens vindas do Arduino (ex: ``<BTN:1>`` ou ``<SEN:TEMP:25>``)."""
         if not rawMessage:
@@ -119,6 +131,21 @@ class SerialProtocol:
                 "button": buttonId,
                 "state": state,
                 "value": buttonId,
+                "raw": cleanedLine,
+            }
+
+        if packetType == "EVENT":
+            parts = body.split(":", 1)
+            eventName: str = parts[0].strip().upper()
+            if not eventName:
+                return {"type": "INVALID", "raw": cleanedLine}
+            eventValue: Any = (
+                cls._parseScalarValue(parts[1].strip()) if len(parts) > 1 else True
+            )
+            return {
+                "type": "EVENT",
+                "name": eventName,
+                "value": eventValue,
                 "raw": cleanedLine,
             }
 

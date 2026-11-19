@@ -46,18 +46,50 @@ class Settings:
                 ),
             )
 
-            # Limites de Hardware e Modo Jogo (RTX 4060 Ti / Ryzen 5 5600)
-            self.gpuGamingThreshold: float = float(os.getenv("GPU_GAMING_THRESHOLD", "85.0"))
+            # Limites de Hardware e Histerese do Modo Jogo (RTX 4060 Ti / Ryzen 5 5600)
+            self.gameModeGpuThreshold: float = float(
+                os.getenv("GAME_MODE_GPU_THRESHOLD", os.getenv("GPU_GAMING_THRESHOLD", "85.0"))
+            )
+            self.gpuGamingThreshold: float = self.gameModeGpuThreshold
+            self.gameModeEnterDuration: float = float(
+                os.getenv("GAME_MODE_ENTER_DURATION", "4.0")
+            )
+            self.gameModeExitDuration: float = float(
+                os.getenv("GAME_MODE_EXIT_DURATION", "8.0")
+            )
+            self.gameModeCooldown: float = float(
+                os.getenv("GAME_MODE_COOLDOWN", "15.0")
+            )
             self.gpuTempAlertThreshold: float = float(os.getenv("GPU_TEMP_ALERT_THRESHOLD", "80.0"))
             self.cpuTempAlertThreshold: float = float(os.getenv("CPU_TEMP_ALERT_THRESHOLD", "85.0"))
             self.telemetryIntervalSeconds: float = float(os.getenv("TELEMETRY_INTERVAL_SECONDS", "2.0"))
 
-            # Configurações do Arduino UNO (Porta Serial)
+            # Configurações do Arduino UNO / ESP-01 (Serial USB ou Wi-Fi TCP Socket)
+            self.arduinoConnectionType: str = (
+                os.getenv("ARDUINO_CONNECTION_TYPE", "wifi").strip().lower()
+            )
+            self.arduinoHost: str = os.getenv("ARDUINO_HOST", "192.168.7.5").strip()
+            self.arduinoPort: int = int(os.getenv("ARDUINO_PORT", "8080"))
+            self.arduinoSocketTimeout: float = float(
+                os.getenv("ARDUINO_SOCKET_TIMEOUT", "3.0")
+            )
             self.comPort: str = os.getenv("COM_PORT", "COM3")
             self.baudRate: int = int(os.getenv("BAUD_RATE", "9600"))
             self.serialTimeout: float = float(os.getenv("SERIAL_TIMEOUT", "1.0"))
             self.lcdRefreshIntervalSeconds: float = float(
                 os.getenv("LCD_REFRESH_INTERVAL_SECONDS", "3.5")
+            )
+            self.presenceGreetingTimeout: int = int(
+                os.getenv("PRESENCE_GREETING_TIMEOUT", "4")
+            )
+            self.presenceTimeoutSeconds: int = int(
+                os.getenv("PRESENCE_TIMEOUT_SECONDS", "180")
+            )
+            self.enablePresenceDetection: bool = (
+                os.getenv("ENABLE_PRESENCE_DETECTION", "true").strip().lower() == "true"
+            )
+            self.logFilePath: Path = self.baseDir / os.getenv(
+                "LOG_FILE_NAME", "jarvis.log"
             )
 
             # Configurações do Serviço de E-mail (IMAP)

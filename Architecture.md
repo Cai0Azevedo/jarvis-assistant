@@ -36,46 +36,77 @@ Você é o arquiteto de software e desenvolvedor sênior responsável por implem
 ## 3. Árvore Oficial do Projeto (`C:\Jarvis\jarvis-assistant`)
 
 ```text
-C:\Jarvis\jarvis-assistant
-├── appConfig\
-│   ├── __init__.py
-│   └── settings.py              # Singleton: carrega .env, porta COM, configs do Ollama e intervalos
-├── aiCore\
-│   ├── __init__.py
-│   ├── jarvisBrain.py           # Orquestrador do Ollama (qwen3.5:9b) e loop de Tool Calling
-│   ├── skillRegistry.py         # Decorator @registerSkill (Command / Registry Pattern)
-│   ├── eventBus.py              # Barramento Pub-Sub assíncrono (Observer Pattern)
-│   └── memoryStore.py           # Histórico de conversa (janela deslizante) e cache de IDs de e-mails lidos
-├── voiceEngine\
-│   ├── __init__.py
-│   ├── wakeWord.py              # Detecção contínua da palavra de ativação ("Jarvis")
-│   ├── voiceInput.py            # Captura de microfone e transcrição (Faster-Whisper)
-│   ├── voiceOutput.py           # Síntese de voz no alto-falante (Piper TTS)
-│   └── audioQueue.py            # Fila de prioridade de fala + mute do microfone enquanto a IA fala
-├── pcHardware\
-│   ├── __init__.py
-│   ├── gpuMonitor.py            # Adapter NVIDIA (pynvml / nvidia-ml-py): uso, VRAM e temperatura da RTX 4060 Ti
-│   ├── cpuRamMonitor.py         # Adapter CPU/RAM: psutil + leitura da memória compartilhada do MSI Afterburner
-│   └── pcStatusFacade.py        # Facade: unifica dados de CPU, GPU e RAM em um único método getSnapshot()
-├── arduinoHub\
-│   ├── __init__.py
-│   ├── serialConnection.py      # Singleton com Thread Lock para porta USB (pyserial) do Arduino UNO
-│   ├── serialProtocol.py        # Empacotamento de mensagens seriais (ex: <LCD:...> e <CMD:...>)
-│   ├── lcdDisplay.py            # Envia telemetria do PC e alertas de eventos para a tela LCD do Arduino
-│   └── sensorReader.py          # Leitura de sensores externos e controle de atuadores/relés futuros
-├── emailService\
-│   ├── __init__.py
-│   ├── imapClient.py            # Adapter IMAP para buscar e-mails não lidos
-│   ├── emailAnalyzer.py         # Envia assunto/remetente/corpo ao Qwen 3.5 para classificar urgência e resumir
-│   └── emailWatcher.py          # Worker em thread paralela que checa novos e-mails periodicamente
-├── skills\
-│   ├── __init__.py
-│   ├── pcSkills.py              # Skills expostas à IA para consultar desempenho e temperaturas do PC
-│   ├── arduinoSkills.py         # Skills expostas à IA para enviar mensagens ao LCD ou acionar sensores/relés
-│   └── emailSkills.py           # Skills expostas à IA para resumir ou buscar e-mails importantes sob demanda
-├── main.py                      # Ponto de entrada: inicializa EventBus, registra skills, sobe threads e inicia o loop
-└── .env                         # Variáveis sensíveis (credenciais IMAP, COM_PORT, modelo LLM)
 
+Legenda:
+  [OK]     = Módulo implementado e funcional
+  [STUB]   = Arquivo criado (0 bytes), aguardando implementação em fase futura
+  [TEST]   = Suíte de testes automatizados / simulação mock
+  [CONFIG] = Arquivo de configuração / ambiente / documentação
+  [IGN]    = Diretório de ambiente ou cache (não versionado)
+
+C:\Jarvis\jarvis-assistant\
+├── .env                              [CONFIG] Variáveis locais (COM_PORT, BAUD_RATE, OLLAMA, IMAP)
+├── .env.example                      [CONFIG] Template público de variáveis de ambiente
+├── .gitattributes                    [CONFIG] Regras de atributos do Git
+├── .gitignore                        [CONFIG] Regras de arquivos ignorados pelo Git
+├── Architecture.md                   [CONFIG] Regras arquiteturais, convenções e contratos
+├── README.md                         [CONFIG] Documentação principal e roadmap do projeto
+├── estruturaProjeto.txt              [CONFIG] Este arquivo de documentação estrutural
+├── main.py                           [OK]     Ponto de entrada, container DI, lifecycle e loop console
+│
+├── aiCore\                           [OK]     Núcleo de IA, memória, skills e barramento de eventos
+│   ├── __init__.py                   [OK]     Exportações do pacote aiCore
+│   ├── eventBus.py                   [OK]     Barramento Pub-Sub assíncrono (Observer Pattern)
+│   ├── jarvisBrain.py                [OK]     Orquestrador do Ollama (qwen3.5:9b) e Tool Calling
+│   ├── memoryStore.py                [OK]     Janela deslizante de mensagens e cache de IDs de e-mail
+│   ├── skillRegistry.py              [OK]     Decorador @registerSkill e registro de ferramentas
+│   └── __pycache__\                  [IGN]    Bytecode compilado Python
+│
+├── appConfig\                        [OK]     Configurações globais e carregamento de .env
+│   ├── __init__.py                   [OK]     Exportação do singleton settings
+│   ├── settings.py                   [OK]     Singleton Settings (Ollama, Hardware, Arduino, IMAP)
+│   └── __pycache__\                  [IGN]    Bytecode compilado Python
+│
+├── arduinoHub\                       [OK]     Subsistema físico Arduino UNO + LCD 1602A (USB Serial)
+│   ├── __init__.py                   [OK]     Exportações públicas do arduinoHub
+│   ├── lcdDisplay.py                 [OK]     Observer do EventBus e worker de telas alternadas (16x2)
+│   ├── sensorReader.py               [OK]     Leitor daemon de pacotes <SEN:...> / <BTN:...> e <CMD:...>
+│   ├── serialConnection.py           [OK]     Singleton thread-safe pyserial com fallback para Mock
+│   ├── serialProtocol.py             [OK]     Formatador <LCD:L1|L2> (16 chars) e parser de pacotes
+│   └── __pycache__\                  [IGN]    Bytecode compilado Python
+│
+├── emailService\                     [STUB]   Fase 4 — Triagem inteligente de e-mails (não implementada)
+│   ├── __init__.py                   [STUB]   (0 bytes)
+│   ├── emailAnalyzer.py              [STUB]   (0 bytes)
+│   ├── emailWatcher.py               [STUB]   (0 bytes)
+│   └── imapClient.py                 [STUB]   (0 bytes)
+│
+├── pcHardware\                       [OK]     Telemetria local de CPU, RAM e GPU sem privilégio Admin
+│   ├── __init__.py                   [OK]     Exportações do pacote pcHardware
+│   ├── cpuRamMonitor.py              [OK]     Leitura de CPU/RAM (psutil) + MAHMSharedMemory (Afterburner)
+│   ├── gpuMonitor.py                 [OK]     Leitura da RTX 4060 Ti via pynvml (NVML)
+│   ├── pcStatusFacade.py             [OK]     Facade getSnapshot(), Modo Jogo (>85%) e alertas térmicos
+│   └── __pycache__\                  [IGN]    Bytecode compilado Python
+│
+├── skills\                           [STUB]   Fase 2 — Skills dedicadas por domínio (não implementada)
+│   ├── __init__.py                   [STUB]   (0 bytes)
+│   ├── arduinoSkills.py              [STUB]   (0 bytes)
+│   ├── emailSkills.py                [STUB]   (0 bytes)
+│   └── pcSkills.py                   [STUB]   (0 bytes)
+│
+├── tests\                            [TEST]   Testes automatizados
+│   ├── testArduinoHub.py             [TEST]   Testes unitários + demo mock do arduinoHub e main.py
+│   └── __pycache__\                  [IGN]    Bytecode compilado Python
+│
+├── voiceEngine\                      [STUB]   Fase 5 — Motor de voz neural (não implementada)
+│   ├── __init__.py                   [STUB]   (0 bytes)
+│   ├── audioQueue.py                 [STUB]   (0 bytes)
+│   ├── voiceInput.py                 [STUB]   (0 bytes)
+│   ├── voiceOutput.py                [STUB]   (0 bytes)
+│   └── wakeWord.py                   [STUB]   (0 bytes)
+│
+├── .git\                             [IGN]    Metadados de controle de versão Git
+└── venv\                             [IGN]    Ambiente virtual Python 3.12 (Include, Lib, Scripts)
 
 
 

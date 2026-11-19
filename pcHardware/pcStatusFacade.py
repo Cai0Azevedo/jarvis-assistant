@@ -1,4 +1,5 @@
 import threading
+import time
 from typing import Any, Optional
 
 from aiCore.eventBus import EventBus, eventBus
@@ -8,7 +9,7 @@ from pcHardware.gpuMonitor import GpuMonitor
 
 
 class PcStatusFacade:
-    """Facade de telemetria que unifica métricas de CPU, GPU e RAM em getSnapshot()."""
+    """Facade de telemetria que unifica métricas de CPU, GPU e RAM com histerese no Modo Jogo."""
 
     _instance: Optional["PcStatusFacade"] = None
     _lock: threading.Lock = threading.Lock()
@@ -38,12 +39,101 @@ class PcStatusFacade:
             self.eventBus: EventBus = bus or eventBus
             self.settings: Settings = appSettings or settings
 
+            self._stateLock: threading.Lock = threading.Lock()
+            self.isGamingModeActive: bool = False
             self._lastGamingModeState: bool = False
+            self.highGpuStartTime: Optional[float] = None
+            self.lowGpuStartTime: Optional[float] = None
+            self.lastTransitionTime: Optional[float] = None
+            self.lastExitTime: Optional[float] = None
+
             self._gpuTempAlertActive: bool = False
             self._cpuTempAlertActive: bool = False
             self._initialized = True
 
-    def getSnapshot(self) -> dict[str, Any]:
+    def resetGamingModeState(self) -> None:
+        """Reinicia os contadores de histerese e o estado do Modo Jogo (útil em testes)."""
+        with self._stateLock:
+            self.isGamingModeActive = False
+            self._lastGamingModeState = False
+            self.highGpuStartTime = None
+            self.lowGpuStartTime = None
+            self.lastTransitionTime = None
+            self.lastExitTime = None
+            self._gpuTempAlertActive = False
+            self._cpuTempAlertActive = False
+
+    def evaluateGamingMode(
+        self,
+        gpuUsage: float,
+        currentTime: Optional[float] = None,
+    ) -> bool:
+        """Avalia a histerese e cooldown do Modo Jogo com base no uso contínuo da GPU."""
+        now: float = currentTime if currentTime is not None else time.monotonic()
+        threshold: float = float(self.settings.gameModeGpuThreshold)
+        enterDuration: float = float(self.settings.gameModeEnterDuration)
+        exitDuration: float = float(self.settings.gameModeExitDuration)
+        cooldown: float = float(self.settings.gameModeCooldown)
+
+        transitioned: bool = False
+        newState: bool = False
+
+        with self._stateLock:
+            if not self.isGamingModeActive:
+                if gpuUsage > threshold:
+                    self.lowGpuStartTime = None
+                    if self.highGpuStartTime is None:
+                        self.highGpuStartTime = now
+
+                    elapsedHigh: float = now - self.highGpuStartTime
+                    inCooldown: bool = (
+                        self.lastExitTime is not None
+                        and (now - self.lastExitTime) < cooldown
+                    )
+                    if elapsedHigh >= enterDuration and not inCooldown:
+                        self.isGamingModeActive = True
+                        self._lastGamingModeState = True
+                        self.lastTransitionTime = now
+                        self.highGpuStartTime = None
+                        self.lowGpuStartTime = None
+                        transitioned = True
+                        newState = True
+                else:
+                    self.highGpuStartTime = None
+            else:
+                if gpuUsage < threshold:
+                    self.highGpuStartTime = None
+                    if self.lowGpuStartTime is None:
+                        self.lowGpuStartTime = now
+
+                    elapsedLow: float = now - self.lowGpuStartTime
+                    if elapsedLow >= exitDuration:
+                        self.isGamingModeActive = False
+                        self._lastGamingModeState = False
+                        self.lastTransitionTime = now
+                        self.lastExitTime = now
+                        self.lowGpuStartTime = None
+                        self.highGpuStartTime = None
+                        transitioned = True
+                        newState = False
+                else:
+                    self.lowGpuStartTime = None
+
+            activeState: bool = self.isGamingModeActive
+
+        if transitioned:
+            self.eventBus.publish(
+                "gamingModeChanged",
+                {
+                    "active": newState,
+                    "isGamingMode": newState,
+                    "gpuUsage": gpuUsage,
+                },
+            )
+
+        return activeState
+
+    def getSnapshot(self, currentTime: Optional[float] = None) -> dict[str, Any]:
         """Unifica dados de CPU, RAM e GPU em um único dicionário e dispara eventos de alerta."""
         cpuRamData: dict[str, Any] = self.cpuRamMonitor.getCpuRamMetrics()
         gpuData: dict[str, Any] = self.gpuMonitor.getGpuMetrics()
@@ -52,7 +142,10 @@ class PcStatusFacade:
         gpuTemp: float = float(gpuData.get("gpuTemp", 0.0))
         cpuTemp: Optional[float] = cpuRamData.get("cpuTemp")
 
-        isGamingMode: bool = gpuUsage > self.settings.gpuGamingThreshold
+        isGamingMode: bool = self.evaluateGamingMode(
+            gpuUsage=gpuUsage,
+            currentTime=currentTime,
+        )
 
         snapshot: dict[str, Any] = {
             **cpuRamData,
@@ -60,33 +153,21 @@ class PcStatusFacade:
             "isGamingMode": isGamingMode,
         }
 
-        self._evaluateAndPublishEvents(
+        self._evaluateThermalAlerts(
             snapshot=snapshot,
-            isGamingMode=isGamingMode,
             gpuTemp=gpuTemp,
             cpuTemp=cpuTemp,
         )
 
         return snapshot
 
-    def _evaluateAndPublishEvents(
+    def _evaluateThermalAlerts(
         self,
         snapshot: dict[str, Any],
-        isGamingMode: bool,
         gpuTemp: float,
         cpuTemp: Optional[float],
     ) -> None:
-        """Publica eventos no EventBus caso limites de Modo Jogo ou temperatura sejam atingidos."""
-        if isGamingMode != self._lastGamingModeState:
-            self._lastGamingModeState = isGamingMode
-            self.eventBus.publish(
-                "gamingModeChanged",
-                {
-                    "isGamingMode": isGamingMode,
-                    "gpuUsage": snapshot.get("gpuUsage", 0.0),
-                },
-            )
-
+        """Publica eventos no EventBus caso limites térmicos da GPU ou CPU sejam atingidos."""
         if gpuTemp > self.settings.gpuTempAlertThreshold:
             if not self._gpuTempAlertActive:
                 self._gpuTempAlertActive = True
@@ -113,19 +194,6 @@ class PcStatusFacade:
                 )
         else:
             self._cpuTempAlertActive = False
-
-    def isGamingModeActive(self) -> bool:
-        """Retorna True se o uso da RTX 4060 Ti estiver acima de 85% (Modo Jogo)."""
-        gpuData: dict[str, Any] = self.gpuMonitor.getGpuMetrics()
-        gpuUsage: float = float(gpuData.get("gpuUsage", 0.0))
-        isGaming: bool = gpuUsage > self.settings.gpuGamingThreshold
-        if isGaming != self._lastGamingModeState:
-            self._lastGamingModeState = isGaming
-            self.eventBus.publish(
-                "gamingModeChanged",
-                {"isGamingMode": isGaming, "gpuUsage": gpuUsage},
-            )
-        return isGaming
 
     def formatSummary(self, snapshot: Optional[dict[str, Any]] = None) -> str:
         """Formata um resumo legível em português com todos os dados de telemetria do PC."""
